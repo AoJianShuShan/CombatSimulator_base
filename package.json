@@ -1,0 +1,11 @@
+{
+  "name": "battle-simulator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ./scripts/build.mjs",
+    "dev": "node ./scripts/dev.mjs",
+    "smoke": "node ./scripts/smoke-test.mjs"
+  }
+}

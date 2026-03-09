@@ -1,0 +1,281 @@
+:root {
+  color-scheme: light;
+  --bg: #f4efe7;
+  --panel: rgba(255, 252, 246, 0.92);
+  --panel-strong: #fffdf8;
+  --text: #1e1d1a;
+  --muted: #716b61;
+  --line: rgba(30, 29, 26, 0.12);
+  --accent: #a6452a;
+  --accent-soft: rgba(166, 69, 42, 0.14);
+  --blue: #2d5c88;
+  --blue-soft: rgba(45, 92, 136, 0.14);
+  --shadow: 0 18px 48px rgba(47, 34, 20, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top, rgba(166, 69, 42, 0.1), transparent 38%),
+    linear-gradient(180deg, #faf5ed 0%, #f0e6d6 100%);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+}
+
+.hero {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.8rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.hero p {
+  margin: 0;
+  max-width: 880px;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.layout {
+  display: grid;
+  gap: 20px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.panel-body {
+  padding: 22px;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.teams {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.unit-list {
+  display: grid;
+  gap: 14px;
+}
+
+.unit-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel-strong);
+  padding: 16px;
+}
+
+.unit-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.unit-card strong {
+  font-size: 1rem;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field label {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fffef9;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.button {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: transform 0.16s ease, opacity 0.16s ease;
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+.button-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.button-secondary {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.button-ghost {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.button-danger {
+  background: rgba(166, 31, 31, 0.12);
+  color: #9e2525;
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.summary-item {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  background: var(--panel-strong);
+}
+
+.summary-item span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.summary-item strong {
+  font-size: 1.1rem;
+}
+
+.log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94rem;
+}
+
+.log-table th,
+.log-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.log-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.badge-a {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.badge-b {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.empty {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+@media (max-width: 1080px) {
+  .grid-3,
+  .teams,
+  .summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 20px 14px 32px;
+  }
+
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-body {
+    padding: 18px;
+  }
+
+  .log-table {
+    display: block;
+    overflow-x: auto;
+  }
+}
