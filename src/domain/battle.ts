@@ -1,10 +1,20 @@
+import { createDefaultUnitStats } from "./attributeMacros.ts";
+
 export type TeamId = "A" | "B";
+export type TargetingStrategy = "front" | "lowestHp" | "highestAttack";
 
 export interface UnitStats {
   maxHp: number;
+  maxHpRate: number;
   attack: number;
+  attackRate: number;
   defense: number;
+  defenseRate: number;
   speed: number;
+  critChance: number;
+  critMultiplier: number;
+  hitChance: number;
+  dodgeChance: number;
 }
 
 export interface UnitConfig {
@@ -18,6 +28,8 @@ export interface UnitConfig {
 export interface BattleConfig {
   maxRounds: number;
   minimumDamage: number;
+  randomSeed: number;
+  targetingStrategy: TargetingStrategy;
   teamNames: Record<TeamId, string>;
   extras?: Record<string, boolean | number | string>;
 }
@@ -36,12 +48,14 @@ export type BattleEventType =
   | "battle_started"
   | "round_started"
   | "turn_started"
+  | "attack_missed"
   | "damage_applied"
   | "unit_defeated"
   | "battle_ended";
 
 export interface BattleEvent {
   sequence: number;
+  timeIndex: number;
   type: BattleEventType;
   round: number;
   actorId?: string;
@@ -51,10 +65,15 @@ export interface BattleEvent {
 }
 
 export interface BattleSimulationResult {
+  randomSeed: number;
   winnerTeamId: TeamId | null;
   roundsCompleted: number;
   events: BattleEvent[];
   finalUnits: BattleUnitState[];
+}
+
+export function createBattleRandomSeed() {
+  return Math.trunc(Date.now()) >>> 0;
 }
 
 export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
@@ -65,9 +84,7 @@ export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
     teamId,
     name: `${prefix}方单位${order}`,
     stats: {
-      maxHp: 30,
-      attack: 10,
-      defense: 3,
+      ...createDefaultUnitStats(),
       speed: Math.max(1, 10 - order),
     },
     extras: {},
@@ -79,6 +96,8 @@ export function createDefaultBattleInput(): BattleInput {
     battle: {
       maxRounds: 20,
       minimumDamage: 1,
+      randomSeed: createBattleRandomSeed(),
+      targetingStrategy: "front",
       teamNames: {
         A: "红方",
         B: "蓝方",

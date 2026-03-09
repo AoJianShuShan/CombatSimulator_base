@@ -1,0 +1,93 @@
+{
+  "requiredRule": "重要：新增属性或扩展属性算法前，必须先更新 attribute-macros.json。前端 UI、默认值、本地模拟器、后端模拟器、测试与文档都必须复用同一份属性宏定义，禁止各处重复硬编码属性口径。",
+  "unitAttributes": [
+    {
+      "key": "maxHp",
+      "label": "最大生命",
+      "default": 30,
+      "min": 1,
+      "step": 1,
+      "role": "maxHpBase"
+    },
+    {
+      "key": "maxHpRate",
+      "label": "生命百分比",
+      "default": 0,
+      "min": -100,
+      "step": 1,
+      "role": "maxHpRate"
+    },
+    {
+      "key": "attack",
+      "label": "攻击",
+      "default": 10,
+      "min": 0,
+      "step": 1,
+      "role": "attackBase"
+    },
+    {
+      "key": "attackRate",
+      "label": "攻击百分比",
+      "default": 0,
+      "min": -100,
+      "step": 1,
+      "role": "attackRate"
+    },
+    {
+      "key": "defense",
+      "label": "防御",
+      "default": 3,
+      "min": 0,
+      "step": 1,
+      "role": "defenseBase"
+    },
+    {
+      "key": "defenseRate",
+      "label": "防御百分比",
+      "default": 0,
+      "min": -100,
+      "step": 1,
+      "role": "defenseRate"
+    },
+    {
+      "key": "speed",
+      "label": "速度",
+      "default": 9,
+      "min": 0,
+      "step": 1,
+      "role": "speed"
+    },
+    {
+      "key": "critChance",
+      "label": "暴击几率",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "critChance"
+    },
+    {
+      "key": "critMultiplier",
+      "label": "暴击倍率",
+      "default": 150,
+      "min": 0,
+      "step": 1,
+      "role": "critMultiplier"
+    },
+    {
+      "key": "hitChance",
+      "label": "命中",
+      "default": 100,
+      "min": 0,
+      "step": 1,
+      "role": "hitChance"
+    },
+    {
+      "key": "dodgeChance",
+      "label": "闪避",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "dodgeChance"
+    }
+  ]
+}

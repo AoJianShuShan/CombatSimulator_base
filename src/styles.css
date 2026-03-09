@@ -28,7 +28,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -127,7 +128,7 @@ input {
 
 .field-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -149,6 +150,18 @@ input {
   background: #fffef9;
 }
 
+.field select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fffef9;
+}
+
+.field-actions {
+  align-content: end;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -165,6 +178,12 @@ input {
 
 .button:hover {
   transform: translateY(-1px);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
 }
 
 .button-primary {
@@ -190,6 +209,70 @@ input {
 .summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.replay-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.replay-snapshot {
+  margin-top: 4px;
+}
+
+.replay-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.replay-status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.event-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.panel-inner {
+  background: transparent;
+  box-shadow: none;
+}
+
+.event-summary {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.replay-unit {
+  padding: 14px;
+}
+
+.replay-unit-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.replay-unit-stats strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.unit-card-defeated {
+  opacity: 0.68;
+}
+
+.payload-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -229,6 +312,10 @@ input {
   background: rgba(255, 255, 255, 0.45);
 }
 
+.log-table tbody tr.is-active {
+  background: rgba(45, 92, 136, 0.12);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -253,11 +340,26 @@ input {
   line-height: 1.7;
 }
 
+.message {
+  margin: 16px 0 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(45, 92, 136, 0.1);
+  color: var(--blue);
+  line-height: 1.6;
+}
+
 @media (max-width: 1080px) {
   .grid-3,
   .teams,
-  .summary {
+  .summary,
+  .replay-status,
+  .payload-grid {
     grid-template-columns: 1fr;
+  }
+
+  .field-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
