@@ -12,6 +12,8 @@ SUPPORTED_TARGETING_STRATEGIES = {"front", "lowestHp", "highestAttack"}
 SUPPORTED_UNIT_POSITIONS = {"front", "middle", "back"}
 SUPPORTED_ATTACK_ELEMENTS = {"none", "physical", "fire", "electromagnetic", "corrosive"}
 SUPPORTED_PROTECTION_TYPES = {"none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"}
+BATTLE_BATCH_COUNT_MIN = 1
+BATTLE_BATCH_COUNT_MAX = 5000
 
 
 def _require_object(value: Any, field_name: str) -> dict[str, Any]:
@@ -74,6 +76,19 @@ def validate_battle_input(payload: dict[str, Any]) -> None:
 
     _validate_battle_config(battle)
     _validate_units(units)
+
+
+def validate_battle_batch_request(payload: dict[str, Any]) -> None:
+    input_payload = _require_object(payload.get("input"), "input")
+    count = _require_integer(payload.get("count"), "count")
+
+    if count < BATTLE_BATCH_COUNT_MIN:
+        raise ValueError(f"count 必须大于等于 {BATTLE_BATCH_COUNT_MIN}")
+
+    if count > BATTLE_BATCH_COUNT_MAX:
+        raise ValueError(f"count 必须小于等于 {BATTLE_BATCH_COUNT_MAX}")
+
+    validate_battle_input(input_payload)
 
 
 def _validate_battle_config(battle: dict[str, Any]) -> None:

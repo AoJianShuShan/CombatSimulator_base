@@ -386,6 +386,37 @@ select {
   gap: 12px;
 }
 
+.view-switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.view-switch-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 16px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.view-switch-button:hover {
+  transform: translateY(-1px);
+}
+
+.view-switch-button.is-active {
+  color: white;
+  background: linear-gradient(135deg, var(--accent), #c35c3d);
+  box-shadow: 0 10px 24px rgba(166, 69, 42, 0.22);
+}
+
 .button {
   border: 0;
   border-radius: 999px;

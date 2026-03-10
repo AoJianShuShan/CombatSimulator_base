@@ -89,6 +89,11 @@ export interface BattleInput {
   units: UnitConfig[];
 }
 
+export interface BattleBatchRequest {
+  count: number;
+  input: BattleInput;
+}
+
 export interface BattleUnitState extends UnitConfig {
   currentHp: number;
   isAlive: boolean;
@@ -122,6 +127,20 @@ export interface BattleSimulationResult {
   finalUnits: BattleUnitState[];
 }
 
+export interface BattleBatchSummaryResult {
+  baseSeed: number;
+  totalBattles: number;
+  wins: Record<TeamId, number>;
+  draws: number;
+  winRates: Record<TeamId, number>;
+  averageTerminalNetAdvantages: Record<TeamId, number>;
+  remainingHpRatesOnWins: Record<TeamId, number | null>;
+  drawRate: number;
+  averageRounds: number;
+  minRounds: number;
+  maxRounds: number;
+}
+
 export function createBattleRandomSeed() {
   return Math.trunc(Date.now()) >>> 0;
 }
@@ -132,6 +151,7 @@ export function getDefaultUnitPosition(order: number): UnitPosition {
 
 export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
   const prefix = teamId === "A" ? "红" : "蓝";
+  const defaultSpeed = teamId === "A" ? 10 : 9;
 
   return {
     id: `${teamId}-${order}`,
@@ -142,7 +162,7 @@ export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
     protectionType: "none",
     stats: {
       ...createDefaultUnitStats(),
-      speed: Math.max(1, 10 - order),
+      speed: defaultSpeed,
     },
     extras: {},
   };

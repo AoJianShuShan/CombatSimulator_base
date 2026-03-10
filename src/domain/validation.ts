@@ -6,6 +6,7 @@ import {
 } from "./battleConfigMacros.ts";
 import type {
   AttackElement,
+  BattleBatchRequest,
   BattleInput,
   ProtectionType,
   TargetingStrategy,
@@ -13,6 +14,9 @@ import type {
   UnitConfig,
   UnitPosition,
 } from "./battle.ts";
+
+export const battleBatchCountMin = 1;
+export const battleBatchCountMax = 5000;
 
 interface NumberRule {
   label: string;
@@ -182,4 +186,28 @@ export function validateBattleInput(input: BattleInput) {
   }
 
   return null;
+}
+
+export function validateBattleBatchCount(value: number) {
+  if (!Number.isFinite(value)) {
+    return "模拟场次必须是合法数值";
+  }
+
+  if (!Number.isInteger(value)) {
+    return "模拟场次必须是整数";
+  }
+
+  if (value < battleBatchCountMin) {
+    return `模拟场次必须大于等于 ${battleBatchCountMin}`;
+  }
+
+  if (value > battleBatchCountMax) {
+    return `模拟场次必须小于等于 ${battleBatchCountMax}`;
+  }
+
+  return null;
+}
+
+export function validateBattleBatchRequest(request: BattleBatchRequest) {
+  return validateBattleBatchCount(request.count) ?? validateBattleInput(request.input);
 }

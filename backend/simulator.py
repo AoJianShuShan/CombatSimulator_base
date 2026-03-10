@@ -5,7 +5,16 @@ from math import floor
 from typing import Any, cast
 
 from backend.attribute_macros import get_unit_stat_role_keys
-from backend.models import AttackElement, BattleInput, ProtectionType, TargetingStrategy, TeamId, UnitConfig, UnitPosition
+from backend.models import (
+    AttackElement,
+    BattleBatchSummaryResult,
+    BattleInput,
+    ProtectionType,
+    TargetingStrategy,
+    TeamId,
+    UnitConfig,
+    UnitPosition,
+)
 
 
 RuntimeUnit = dict[str, Any]
@@ -60,6 +69,24 @@ def _clamp_multiplier(value: float) -> float:
 
 def _round_to_two_decimals(value: float) -> float:
     return round(value, 2)
+
+
+def _round_to_four_decimals(value: float) -> float:
+    return round(value, 4)
+
+
+def _mix_seed(base_seed: int, index: int) -> int:
+    value = (int(base_seed) & 0xFFFFFFFF) ^ ((index + 1) * 0x9E3779B9 & 0xFFFFFFFF)
+    value ^= value >> 16
+    value = (value * 0x85EBCA6B) & 0xFFFFFFFF
+    value ^= value >> 13
+    value = (value * 0xC2B2AE35) & 0xFFFFFFFF
+    value ^= value >> 16
+    return value & 0xFFFFFFFF
+
+
+def derive_battle_seed(base_seed: int, index: int) -> int:
+    return int(base_seed) if index <= 0 else _mix_seed(base_seed, index)
 
 
 def _get_scaled_stat(base_value: float, rate: float) -> int:
@@ -436,4 +463,93 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
         "roundsCompleted": rounds_completed,
         "events": events,
         "finalUnits": final_units,
+    }
+
+
+def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBatchSummaryResult:
+    normalized_count = max(1, int(count))
+    wins = {
+        "A": 0,
+        "B": 0,
+    }
+    team_max_hp_totals = {
+        "A": sum(_get_effective_max_hp(_clone_unit(unit, index)) for index, unit in enumerate(payload["units"]) if unit["teamId"] == "A"),
+        "B": sum(_get_effective_max_hp(_clone_unit(unit, index)) for index, unit in enumerate(payload["units"]) if unit["teamId"] == "B"),
+    }
+    remaining_hp_totals = {
+        "A": 0,
+        "B": 0,
+    }
+    max_hp_totals_on_wins = {
+        "A": 0,
+        "B": 0,
+    }
+    total_terminal_net_advantage_a = 0.0
+    draws = 0
+    total_rounds = 0
+    min_rounds = float("inf")
+    max_rounds = float("-inf")
+
+    for index in range(normalized_count):
+        battle_seed = derive_battle_seed(int(payload["battle"]["randomSeed"]), index)
+        result = simulate_battle(
+            {
+                **payload,
+                "battle": {
+                    **payload["battle"],
+                    "randomSeed": battle_seed,
+                },
+            }
+        )
+
+        rounds_completed = int(result["roundsCompleted"])
+        total_rounds += rounds_completed
+        min_rounds = min(min_rounds, rounds_completed)
+        max_rounds = max(max_rounds, rounds_completed)
+        remaining_hp_by_team = {
+            "A": sum(int(unit["currentHp"]) for unit in result["finalUnits"] if unit["teamId"] == "A"),
+            "B": sum(int(unit["currentHp"]) for unit in result["finalUnits"] if unit["teamId"] == "B"),
+        }
+        terminal_hp_rates = {
+            "A": remaining_hp_by_team["A"] / team_max_hp_totals["A"] if team_max_hp_totals["A"] > 0 else 0.0,
+            "B": remaining_hp_by_team["B"] / team_max_hp_totals["B"] if team_max_hp_totals["B"] > 0 else 0.0,
+        }
+        total_terminal_net_advantage_a += terminal_hp_rates["A"] - terminal_hp_rates["B"]
+
+        winner_team_id = result["winnerTeamId"]
+        if winner_team_id in {"A", "B"}:
+            wins[cast(TeamId, winner_team_id)] += 1
+            winner_units = [unit for unit in result["finalUnits"] if unit["teamId"] == winner_team_id]
+            remaining_hp_totals[cast(TeamId, winner_team_id)] += sum(int(unit["currentHp"]) for unit in winner_units)
+            max_hp_totals_on_wins[cast(TeamId, winner_team_id)] += sum(
+                _get_effective_max_hp(cast(RuntimeUnit, unit)) for unit in winner_units
+            )
+        else:
+            draws += 1
+
+    return {
+        "baseSeed": int(payload["battle"]["randomSeed"]),
+        "totalBattles": normalized_count,
+        "wins": wins,
+        "draws": draws,
+        "winRates": {
+            "A": _round_to_four_decimals(wins["A"] / normalized_count),
+            "B": _round_to_four_decimals(wins["B"] / normalized_count),
+        },
+        "averageTerminalNetAdvantages": {
+            "A": _round_to_four_decimals(total_terminal_net_advantage_a / normalized_count),
+            "B": _round_to_four_decimals(-total_terminal_net_advantage_a / normalized_count),
+        },
+        "remainingHpRatesOnWins": {
+            "A": _round_to_four_decimals(remaining_hp_totals["A"] / max_hp_totals_on_wins["A"])
+            if max_hp_totals_on_wins["A"] > 0
+            else None,
+            "B": _round_to_four_decimals(remaining_hp_totals["B"] / max_hp_totals_on_wins["B"])
+            if max_hp_totals_on_wins["B"] > 0
+            else None,
+        },
+        "drawRate": _round_to_four_decimals(draws / normalized_count),
+        "averageRounds": _round_to_four_decimals(total_rounds / normalized_count),
+        "minRounds": 0 if min_rounds == float("inf") else int(min_rounds),
+        "maxRounds": 0 if max_rounds == float("-inf") else int(max_rounds),
     }

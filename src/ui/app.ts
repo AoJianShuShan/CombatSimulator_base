@@ -12,6 +12,7 @@ import {
   attackElementLabels,
   attackElementOrder,
   type AttackElement,
+  type BattleBatchSummaryResult,
   createBattleRandomSeed,
   createDefaultBattleInput,
   createDefaultUnit,
@@ -31,6 +32,7 @@ import {
 import {
   normalizeDisplayName,
   validateAttackElement,
+  validateBattleBatchCount,
   validateBattleInput,
   validateBattleNumberField,
   validateDisplayName,
@@ -39,9 +41,11 @@ import {
   validateUnitStatField,
 } from "../domain/validation.ts";
 import { simulateBattle } from "../simulator/simulateBattle.ts";
-import { fetchBackendHealth, simulateBattleByApi } from "./api.ts";
+import { simulateBattleBatchSummary } from "../simulator/simulateBattleBatch.ts";
+import { fetchBackendHealth, simulateBattleBatchByApi, simulateBattleByApi } from "./api.ts";
 
 type SimulationMode = "local" | "backend";
+type SimulationView = "single" | "batch";
 type MessageTone = "error" | "success";
 
 interface RenderStateSnapshot {
@@ -76,7 +80,10 @@ interface SaveFilePickerWindow extends Window {
 interface AppState {
   draft: BattleInput;
   result: BattleSimulationResult | null;
+  batchSummary: BattleBatchSummaryResult | null;
   simulationMode: SimulationMode;
+  simulationView: SimulationView;
+  batchCount: number;
   backendBaseUrl: string;
   isSubmitting: boolean;
   isReplayPlaying: boolean;
@@ -94,7 +101,10 @@ interface AppState {
 const state: AppState = {
   draft: createDefaultBattleInput(),
   result: null,
+  batchSummary: null,
   simulationMode: "local",
+  simulationView: "single",
+  batchCount: 100,
   backendBaseUrl: "http://127.0.0.1:8000",
   isSubmitting: false,
   isReplayPlaying: false,
@@ -233,6 +243,7 @@ function clearMessage() {
 function invalidateResult() {
   stopReplay();
   state.result = null;
+  state.batchSummary = null;
   state.replayEventIndex = 0;
   clearMessage();
 }
@@ -547,6 +558,7 @@ function resetDraft() {
   stopReplay();
   state.draft = createDefaultBattleInput();
   state.result = null;
+  state.batchSummary = null;
   clearMessage();
   state.isSubmitting = false;
   state.isReplayPlaying = false;
@@ -561,6 +573,28 @@ function resetDraft() {
 
 function updateSimulationMode(mode: SimulationMode) {
   state.simulationMode = mode;
+  clearMessage();
+}
+
+function updateSimulationView(view: SimulationView) {
+  if (state.simulationView === view) {
+    return;
+  }
+
+  stopReplay();
+  state.simulationView = view;
+  clearMessage();
+}
+
+function updateBatchCount(rawValue: string) {
+  const value = Number(rawValue);
+  const error = validateBattleBatchCount(value);
+  if (error) {
+    setMessage(error, "error");
+    return;
+  }
+
+  state.batchCount = value;
   clearMessage();
 }
 
@@ -714,6 +748,7 @@ async function importDraft(file: File) {
   stopReplay();
   state.draft = draft;
   state.result = null;
+  state.batchSummary = null;
   state.replayEventIndex = 0;
   state.isSubmitting = false;
   state.isReplayPlaying = false;
@@ -727,11 +762,15 @@ async function importDraft(file: File) {
 }
 
 async function exportResult() {
-  if (!state.result) {
+  const payload = state.simulationView === "single" ? state.result : state.batchSummary;
+  if (!payload) {
     return;
   }
 
-  await saveJsonFile("battle-result.json", state.result);
+  await saveJsonFile(
+    state.simulationView === "single" ? "battle-result.json" : "battle-batch-summary.json",
+    payload,
+  );
 }
 
 async function runSimulation() {
@@ -739,7 +778,10 @@ async function runSimulation() {
     return;
   }
 
-  const validationError = validateBattleInput(state.draft);
+  const validationError =
+    state.simulationView === "single"
+      ? validateBattleInput(state.draft)
+      : validateBattleBatchCount(state.batchCount) ?? validateBattleInput(state.draft);
   if (validationError) {
     setMessage(validationError, "error");
     return;
@@ -749,14 +791,30 @@ async function runSimulation() {
   clearMessage();
 
   try {
-    state.result =
+    stopReplay();
+    if (state.simulationView === "single") {
+      state.result =
+        state.simulationMode === "local"
+          ? simulateBattle(state.draft)
+          : await simulateBattleByApi(state.backendBaseUrl, state.draft);
+      state.replayEventIndex = 0;
+      state.isReplayPlaying = false;
+      return;
+    }
+
+    state.batchSummary =
       state.simulationMode === "local"
-        ? simulateBattle(state.draft)
-        : await simulateBattleByApi(state.backendBaseUrl, state.draft);
-    state.replayEventIndex = 0;
-    state.isReplayPlaying = false;
+        ? simulateBattleBatchSummary(state.draft, state.batchCount)
+        : await simulateBattleBatchByApi(state.backendBaseUrl, {
+            count: state.batchCount,
+            input: state.draft,
+          });
   } catch (error) {
-    state.result = null;
+    if (state.simulationView === "single") {
+      state.result = null;
+    } else {
+      state.batchSummary = null;
+    }
     setMessage(error instanceof Error ? error.message : "模拟请求失败", "error");
   } finally {
     state.isSubmitting = false;
@@ -839,6 +897,53 @@ function renderMessage() {
   }
 
   return `<p class="message message-${state.messageTone}">${escapeHtml(state.message)}</p>`;
+}
+
+function formatSummaryRate(value: number) {
+  const percent = Math.round(value * 10000) / 100;
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(2).replace(/\.?0+$/, "")}%`;
+}
+
+function formatNullableSummaryRate(value: number | null) {
+  return value === null ? "-" : formatSummaryRate(value);
+}
+
+function formatSignedSummaryRate(value: number) {
+  const formatted = formatSummaryRate(Math.abs(value));
+  if (value > 0) {
+    return `+${formatted}`;
+  }
+
+  if (value < 0) {
+    return `-${formatted}`;
+  }
+
+  return formatted;
+}
+
+function renderSimulationViewTabs() {
+  return `
+    <div class="view-switch" role="tablist" aria-label="执行视图">
+      <button
+        class="view-switch-button ${state.simulationView === "single" ? "is-active" : ""}"
+        data-action="switch-simulation-view"
+        data-view="single"
+        role="tab"
+        aria-selected="${state.simulationView === "single"}"
+      >
+        单场模拟
+      </button>
+      <button
+        class="view-switch-button ${state.simulationView === "batch" ? "is-active" : ""}"
+        data-action="switch-simulation-view"
+        data-view="batch"
+        role="tab"
+        aria-selected="${state.simulationView === "batch"}"
+      >
+        多场统计
+      </button>
+    </div>
+  `;
 }
 
 function renderReplayControls() {
@@ -1547,7 +1652,7 @@ function renderUnitEditorPage() {
   `;
 }
 
-function renderSummary() {
+function renderSingleSummary() {
   if (!state.result) {
     return `<p class="empty">运行一次模拟后，这里会展示胜负、回合数、幸存单位与完整事件流。</p>`;
   }
@@ -1584,6 +1689,69 @@ function renderSummary() {
       </div>
     </div>
   `;
+}
+
+function renderBatchSummary() {
+  if (!state.batchSummary) {
+    return `<p class="empty">输入模拟场次后运行统计，这里会展示胜率、平局率与回合分布摘要。</p>`;
+  }
+
+  return `
+    <div class="summary">
+      <div class="summary-item">
+        <span>根种子</span>
+        <strong>${state.batchSummary.baseSeed}</strong>
+      </div>
+      <div class="summary-item">
+        <span>总场次</span>
+        <strong>${state.batchSummary.totalBattles}</strong>
+      </div>
+      <div class="summary-item">
+        <span>${escapeHtml(state.draft.battle.teamNames.A)}胜场 / 胜率</span>
+        <strong>${state.batchSummary.wins.A} / ${formatSummaryRate(state.batchSummary.winRates.A)}</strong>
+      </div>
+      <div class="summary-item">
+        <span>${escapeHtml(state.draft.battle.teamNames.B)}胜场 / 胜率</span>
+        <strong>${state.batchSummary.wins.B} / ${formatSummaryRate(state.batchSummary.winRates.B)}</strong>
+      </div>
+      <div class="summary-item">
+        <span>${escapeHtml(state.draft.battle.teamNames.A)}平均终局净优势</span>
+        <strong>${formatSignedSummaryRate(state.batchSummary.averageTerminalNetAdvantages.A)}</strong>
+      </div>
+      <div class="summary-item">
+        <span>${escapeHtml(state.draft.battle.teamNames.B)}平均终局净优势</span>
+        <strong>${formatSignedSummaryRate(state.batchSummary.averageTerminalNetAdvantages.B)}</strong>
+      </div>
+      <div class="summary-item">
+        <span>${escapeHtml(state.draft.battle.teamNames.A)}获胜场次总剩余血量%</span>
+        <strong>${formatNullableSummaryRate(state.batchSummary.remainingHpRatesOnWins.A)}</strong>
+      </div>
+      <div class="summary-item">
+        <span>${escapeHtml(state.draft.battle.teamNames.B)}获胜场次总剩余血量%</span>
+        <strong>${formatNullableSummaryRate(state.batchSummary.remainingHpRatesOnWins.B)}</strong>
+      </div>
+      <div class="summary-item">
+        <span>平局场次 / 占比</span>
+        <strong>${state.batchSummary.draws} / ${formatSummaryRate(state.batchSummary.drawRate)}</strong>
+      </div>
+      <div class="summary-item">
+        <span>平均完成回合</span>
+        <strong>${state.batchSummary.averageRounds}</strong>
+      </div>
+      <div class="summary-item">
+        <span>最短回合</span>
+        <strong>${state.batchSummary.minRounds}</strong>
+      </div>
+      <div class="summary-item">
+        <span>最长回合</span>
+        <strong>${state.batchSummary.maxRounds}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function renderSummary() {
+  return state.simulationView === "single" ? renderSingleSummary() : renderBatchSummary();
 }
 
 function renderLogTable() {
@@ -1672,6 +1840,8 @@ function renderLogTable() {
 }
 
 function renderMainPage() {
+  const isSingleView = state.simulationView === "single";
+  const canExport = isSingleView ? state.result !== null : state.batchSummary !== null;
   const battleNumberFieldsHtml = battleConfigNumberMacros
     .map(
       (macro) => `
@@ -1713,9 +1883,10 @@ function renderMainPage() {
                 <button class="button button-ghost" data-action="import-draft">导入配置</button>
                 <button class="button button-ghost" data-action="export-draft">导出配置</button>
                 <input type="file" accept=".json,application/json" data-action="import-draft-file" hidden />
-                <button class="button button-primary" data-action="simulate" ${state.isSubmitting ? "disabled" : ""}>${state.isSubmitting ? "运行中..." : "运行模拟"}</button>
+                <button class="button button-primary" data-action="simulate" ${state.isSubmitting ? "disabled" : ""}>${state.isSubmitting ? "运行中..." : isSingleView ? "运行模拟" : "运行统计"}</button>
               </div>
             </div>
+            ${renderSimulationViewTabs()}
             <div class="grid-3">
               <div class="field">
                 <label>模拟执行方式</label>
@@ -1732,6 +1903,20 @@ function renderMainPage() {
                 <label>后端检查</label>
                 <button class="button button-ghost" data-action="check-backend" ${state.isSubmitting ? "disabled" : ""}>检查连接</button>
               </div>
+              ${isSingleView ? "" : `
+                <div class="field">
+                  <label>模拟场次</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="5000"
+                    step="1"
+                    data-action="update-batch-count"
+                    data-focus-key="batch-count"
+                    value="${state.batchCount}"
+                  />
+                </div>
+              `}
               <div class="field">
                 <label>红方名称</label>
                 <input
@@ -1796,41 +1981,45 @@ function renderMainPage() {
         <article class="panel">
           <div class="panel-body">
             <div class="panel-header">
-              <h2 class="panel-title">模拟结果</h2>
+              <h2 class="panel-title">${isSingleView ? "模拟结果" : "统计结果"}</h2>
               <div class="toolbar">
-                <button class="button button-ghost" data-action="export-result" ${state.result ? "" : "disabled"}>导出结果</button>
+                <button class="button button-ghost" data-action="export-result" ${canExport ? "" : "disabled"}>导出结果</button>
               </div>
             </div>
             ${renderSummary()}
           </div>
         </article>
 
-        <article class="panel">
-          <div class="panel-body">
-            <div class="panel-header">
-              <h2 class="panel-title">战斗回放</h2>
-            </div>
-            ${renderReplayControls()}
-          </div>
-        </article>
+        ${isSingleView
+          ? `
+            <article class="panel">
+              <div class="panel-body">
+                <div class="panel-header">
+                  <h2 class="panel-title">战斗回放</h2>
+                </div>
+                ${renderReplayControls()}
+              </div>
+            </article>
 
-        <article class="panel">
-          <div class="panel-body">
-            <div class="panel-header">
-              <h2 class="panel-title">当前事件</h2>
-            </div>
-            ${renderEventPayload()}
-          </div>
-        </article>
+            <article class="panel">
+              <div class="panel-body">
+                <div class="panel-header">
+                  <h2 class="panel-title">当前事件</h2>
+                </div>
+                ${renderEventPayload()}
+              </div>
+            </article>
 
-        <article class="panel">
-          <div class="panel-body">
-            <div class="panel-header">
-              <h2 class="panel-title">事件日志</h2>
-            </div>
-            ${renderLogTable()}
-          </div>
-        </article>
+            <article class="panel">
+              <div class="panel-body">
+                <div class="panel-header">
+                  <h2 class="panel-title">事件日志</h2>
+                </div>
+                ${renderLogTable()}
+              </div>
+            </article>
+          `
+          : ""}
       </section>
     </main>
   `;
@@ -2044,6 +2233,19 @@ function bindEvents(container: HTMLElement) {
   container.querySelector<HTMLSelectElement>("[data-action='update-simulation-mode']")?.addEventListener("change", (event) => {
     const target = event.currentTarget as HTMLSelectElement;
     updateSimulationMode((target.value as SimulationMode) ?? "local");
+    renderApp(container);
+  });
+
+  container.querySelectorAll<HTMLButtonElement>("[data-action='switch-simulation-view']").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateSimulationView((button.dataset.view as SimulationView) ?? "single");
+      renderApp(container);
+    });
+  });
+
+  container.querySelector<HTMLInputElement>("[data-action='update-batch-count']")?.addEventListener("change", (event) => {
+    const target = event.currentTarget as HTMLInputElement;
+    updateBatchCount(target.value);
     renderApp(container);
   });
 

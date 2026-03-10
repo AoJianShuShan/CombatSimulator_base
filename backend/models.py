@@ -65,3 +65,32 @@ class BattleConfig(TypedDict):
 class BattleInput(TypedDict):
     battle: BattleConfig
     units: list[UnitConfig]
+
+
+class TeamCountSummary(TypedDict):
+    A: int
+    B: int
+
+
+class TeamRateSummary(TypedDict):
+    A: float
+    B: float
+
+
+class BattleBatchRequest(TypedDict):
+    count: int
+    input: BattleInput
+
+
+class BattleBatchSummaryResult(TypedDict):
+    baseSeed: int
+    totalBattles: int
+    wins: TeamCountSummary
+    draws: int
+    winRates: TeamRateSummary
+    averageTerminalNetAdvantages: TeamRateSummary
+    remainingHpRatesOnWins: dict[TeamId, float | None]
+    drawRate: float
+    averageRounds: float
+    minRounds: int
+    maxRounds: int

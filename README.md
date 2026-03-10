@@ -3,6 +3,8 @@
 一个零依赖的战斗模拟器骨架，当前提供：
 
 - 前端 Web TypeScript：配置阵容、编辑单位、运行模拟、查看结果与事件日志
+- 前端执行视图切换：单场模拟 / 多场统计
+- 前端可用交互：刷新随机种子、逐事件回放、导出配置与结果 JSON
 - 前端本地模拟引擎：纯函数执行战斗，不依赖 UI
 - Python 后端：标准库 HTTP API，可在 WSL、Linux 或 Windows 启动
 - 本地构建、冒烟测试、属性审计脚本
@@ -21,6 +23,7 @@
 - 通过二级页面编辑单位属性详情，并查看只读的有效生命、有效攻击、有效防御
 - 支持导入配置 JSON、导出配置 JSON、导出模拟结果 JSON
 - 支持前端本地运行，或切换为调用后端 API
+- 支持在同一份配置上运行 N 场统计，输出胜率、终局净优势、剩余血量与回合分布摘要
 - 固定 `randomSeed` 后重复运行，得到可复现的事件流
 - 结果页支持逐事件回放、日志模糊筛选、关键伤害高亮
 
@@ -88,6 +91,7 @@ $env:PORT = "8000"
 - 每个单位带显式站位：前排、中排、后排
 - `前排优先` 会按敌方前排 -> 中排 -> 后排选择目标，同排内再按初始编队顺序
 - 有效生命 / 攻击 / 防御：`固定值 * (1 + 百分比 / 100)`，结果按四舍五入取整
+- 每场战斗都带 `randomSeed`，前后端用同一种子驱动伪随机，保证可复现重播
 - 命中判定：`max(0, min(100, 命中 - 闪避))`
 - 伤害由基础伤害、护甲减伤、暴击、爆头、元素关系、技能倍率、各类增减伤乘区共同决定
 - 任一方全灭或达到最大回合数后结束
@@ -98,9 +102,12 @@ $env:PORT = "8000"
 
 - `GET /health`
 - `POST /simulate`
+- `POST /simulate-batch`
 
 `POST /simulate` 请求体对齐 [`src/domain/battle.ts`](./src/domain/battle.ts) 中的 `BattleInput`，响应体对齐 `BattleSimulationResult`。
 其中 `BattleInput.battle.randomSeed` 用于伪随机重播，`BattleSimulationResult.events[*].timeIndex` 用于事件时间轴。
+
+`POST /simulate-batch` 请求体格式为 `{ input: BattleInput, count: number }`，返回 N 场战斗的最终摘要统计，不返回完整事件流。
 
 ## 目录
 
