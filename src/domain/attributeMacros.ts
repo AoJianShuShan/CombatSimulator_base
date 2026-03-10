@@ -9,7 +9,21 @@ type UnitStatKey =
   | "critChance"
   | "critMultiplier"
   | "hitChance"
-  | "dodgeChance";
+  | "dodgeChance"
+  | "armor"
+  | "armorPenetration"
+  | "headshotChance"
+  | "headshotMultiplier"
+  | "scenarioDamageBonus"
+  | "heroClassDamageBonus"
+  | "skillTypeDamageBonus"
+  | "finalDamageBonus"
+  | "finalDamageReduction"
+  | "skillMultiplier"
+  | "outputAmplify"
+  | "outputDecay"
+  | "damageTakenAmplify"
+  | "damageTakenReduction";
 
 type UnitStatRole =
   | "maxHpBase"
@@ -22,7 +36,21 @@ type UnitStatRole =
   | "critChance"
   | "critMultiplier"
   | "hitChance"
-  | "dodgeChance";
+  | "dodgeChance"
+  | "armor"
+  | "armorPenetration"
+  | "headshotChance"
+  | "headshotMultiplier"
+  | "scenarioDamageBonus"
+  | "heroClassDamageBonus"
+  | "skillTypeDamageBonus"
+  | "finalDamageBonus"
+  | "finalDamageReduction"
+  | "skillMultiplier"
+  | "outputAmplify"
+  | "outputDecay"
+  | "damageTakenAmplify"
+  | "damageTakenReduction";
 
 interface AttributeMacroDefinition {
   key: UnitStatKey;

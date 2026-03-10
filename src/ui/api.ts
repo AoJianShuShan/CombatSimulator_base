@@ -14,18 +14,46 @@ export async function simulateBattleByApi(baseUrl: string, input: BattleInput): 
   });
 
   if (!response.ok) {
-    throw new Error(`后端模拟失败：HTTP ${response.status}`);
+    let message = `后端模拟失败：HTTP ${response.status}`;
+    try {
+      const payload = (await response.json()) as { message?: string };
+      if (payload.message) {
+        message = payload.message;
+      }
+    } catch {
+      return Promise.reject(new Error(message));
+    }
+
+    throw new Error(message);
   }
 
-  return (await response.json()) as BattleSimulationResult;
+  try {
+    return (await response.json()) as BattleSimulationResult;
+  } catch {
+    throw new Error("后端返回了无法解析的 JSON 响应");
+  }
 }
 
 export async function fetchBackendHealth(baseUrl: string): Promise<{ status: string; service: string }> {
   const response = await fetch(`${normalizeBaseUrl(baseUrl)}/health`);
 
   if (!response.ok) {
-    throw new Error(`后端健康检查失败：HTTP ${response.status}`);
+    let message = `后端健康检查失败：HTTP ${response.status}`;
+    try {
+      const payload = (await response.json()) as { message?: string };
+      if (payload.message) {
+        message = payload.message;
+      }
+    } catch {
+      return Promise.reject(new Error(message));
+    }
+
+    throw new Error(message);
   }
 
-  return (await response.json()) as { status: string; service: string };
+  try {
+    return (await response.json()) as { status: string; service: string };
+  } catch {
+    throw new Error("后端健康检查返回了无法解析的 JSON 响应");
+  }
 }

@@ -5,6 +5,9 @@ from typing import Literal, NotRequired, TypedDict
 
 TeamId = Literal["A", "B"]
 TargetingStrategy = Literal["front", "lowestHp", "highestAttack"]
+UnitPosition = Literal["front", "middle", "back"]
+AttackElement = Literal["none", "physical", "fire", "electromagnetic", "corrosive"]
+ProtectionType = Literal["none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"]
 
 
 class UnitStats(TypedDict):
@@ -19,12 +22,29 @@ class UnitStats(TypedDict):
     critMultiplier: int | float
     hitChance: int | float
     dodgeChance: int | float
+    armor: int | float
+    armorPenetration: int | float
+    headshotChance: int | float
+    headshotMultiplier: int | float
+    scenarioDamageBonus: int | float
+    heroClassDamageBonus: int | float
+    skillTypeDamageBonus: int | float
+    finalDamageBonus: int | float
+    finalDamageReduction: int | float
+    skillMultiplier: int | float
+    outputAmplify: int | float
+    outputDecay: int | float
+    damageTakenAmplify: int | float
+    damageTakenReduction: int | float
 
 
 class UnitConfig(TypedDict):
     id: str
     teamId: TeamId
     name: str
+    position: UnitPosition
+    attackElement: AttackElement
+    protectionType: ProtectionType
     stats: UnitStats
     extras: NotRequired[dict[str, bool | int | float | str]]
 
@@ -34,6 +54,10 @@ class BattleConfig(TypedDict):
     minimumDamage: int
     randomSeed: int
     targetingStrategy: TargetingStrategy
+    armorFormulaBase: int | float
+    maxArmorDamageReduction: int | float
+    elementAdvantageDamageRate: int | float
+    elementDisadvantageDamageRate: int | float
     teamNames: dict[TeamId, str]
     extras: NotRequired[dict[str, bool | int | float | str]]
 

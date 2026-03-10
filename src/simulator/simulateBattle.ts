@@ -1,10 +1,13 @@
 import type {
+  AttackElement,
   BattleEvent,
   BattleInput,
   BattleSimulationResult,
   BattleUnitState,
+  ProtectionType,
   TeamId,
   UnitConfig,
+  UnitPosition,
 } from "../domain/battle.ts";
 import { unitStatRoleKeys } from "../domain/attributeMacros.ts";
 import type { TargetingStrategy, UnitStats } from "../domain/battle.ts";
@@ -18,12 +21,40 @@ interface SeededRandom {
   seed: number;
 }
 
+const unitPositionPriority: Record<UnitPosition, number> = {
+  front: 0,
+  middle: 1,
+  back: 2,
+};
+
+const attackElementAdvantageMap: Partial<Record<AttackElement, ProtectionType>> = {
+  physical: "heatArmor",
+  fire: "insulatedArmor",
+  electromagnetic: "bioArmor",
+  corrosive: "heavyArmor",
+};
+
+const attackElementDisadvantageMap: Partial<Record<AttackElement, ProtectionType>> = {
+  physical: "heavyArmor",
+  fire: "heatArmor",
+  electromagnetic: "insulatedArmor",
+  corrosive: "bioArmor",
+};
+
 function roundHalfUp(value: number) {
   return Math.floor(value + 0.5);
 }
 
 function clampPercentage(value: number) {
   return Math.min(100, Math.max(0, value));
+}
+
+function clampMultiplier(value: number) {
+  return Math.max(0, value);
+}
+
+function roundToTwoDecimals(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function getScaledStat(baseValue: number, rate: number) {
@@ -40,6 +71,51 @@ function getEffectiveAttack(stats: UnitStats) {
 
 function getEffectiveDefense(stats: UnitStats) {
   return getScaledStat(stats[unitStatRoleKeys.defenseBase], stats[unitStatRoleKeys.defenseRate]);
+}
+
+function getArmorReductionRate(input: BattleInput, actor: RuntimeUnit, target: RuntimeUnit) {
+  const armorGap = Math.max(0, target.stats[unitStatRoleKeys.armor] - actor.stats[unitStatRoleKeys.armorPenetration]);
+  if (armorGap <= 0) {
+    return 0;
+  }
+
+  const formulaBase = Math.max(0, input.battle.armorFormulaBase);
+  const denominator = formulaBase + armorGap;
+  if (denominator <= 0) {
+    return 0;
+  }
+
+  const rawReductionRate = armorGap / denominator;
+  const maxReductionRate = clampPercentage(input.battle.maxArmorDamageReduction) / 100;
+  return Math.min(maxReductionRate, rawReductionRate);
+}
+
+function getElementRelation(input: BattleInput, actor: RuntimeUnit, target: RuntimeUnit) {
+  if (actor.attackElement === "none" || target.protectionType === "none") {
+    return {
+      relation: "neutral",
+      multiplier: 1,
+    } as const;
+  }
+
+  if (attackElementAdvantageMap[actor.attackElement] === target.protectionType) {
+    return {
+      relation: "advantage",
+      multiplier: input.battle.elementAdvantageDamageRate / 100,
+    } as const;
+  }
+
+  if (attackElementDisadvantageMap[actor.attackElement] === target.protectionType) {
+    return {
+      relation: "disadvantage",
+      multiplier: input.battle.elementDisadvantageDamageRate / 100,
+    } as const;
+  }
+
+  return {
+    relation: "neutral",
+    multiplier: 1,
+  } as const;
 }
 
 function createSeededRandom(seed: number): SeededRandom {
@@ -80,8 +156,10 @@ function getOpponentTeamId(teamId: TeamId): TeamId {
 }
 
 function compareByInitialTargetPriority(left: RuntimeUnit, right: RuntimeUnit) {
-  if (left.teamId !== right.teamId) {
-    return left.teamId.localeCompare(right.teamId);
+  const leftPositionPriority = unitPositionPriority[left.position];
+  const rightPositionPriority = unitPositionPriority[right.position];
+  if (leftPositionPriority !== rightPositionPriority) {
+    return leftPositionPriority - rightPositionPriority;
   }
 
   return left.initialOrder - right.initialOrder;
@@ -219,28 +297,78 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
 
       const effectiveAttack = getEffectiveAttack(actor.stats);
       const effectiveDefense = getEffectiveDefense(target.stats);
+      const isMinimumDamageByDefense = effectiveAttack - effectiveDefense < input.battle.minimumDamage;
       const baseDamage = Math.max(input.battle.minimumDamage, effectiveAttack - effectiveDefense);
+      const armorReductionRate = getArmorReductionRate(input, actor, target);
+      const armorMultiplier = 1 - armorReductionRate;
       const critRoll = random.next();
       const isCritical = critRoll < clampPercentage(actor.stats[unitStatRoleKeys.critChance]) / 100;
-      const damage = isCritical
-        ? Math.max(
-            input.battle.minimumDamage,
-            roundHalfUp((baseDamage * actor.stats[unitStatRoleKeys.critMultiplier]) / 100),
-          )
-        : baseDamage;
+      const criticalMultiplier = isCritical ? actor.stats[unitStatRoleKeys.critMultiplier] / 100 : 1;
+      const headshotRoll = random.next();
+      const isHeadshot = headshotRoll < clampPercentage(actor.stats[unitStatRoleKeys.headshotChance]) / 100;
+      const headshotMultiplier = isHeadshot ? actor.stats[unitStatRoleKeys.headshotMultiplier] / 100 : 1;
+      const { relation: elementRelation, multiplier: elementMultiplier } = getElementRelation(input, actor, target);
+      const scenarioMultiplier = 1 + actor.stats[unitStatRoleKeys.scenarioDamageBonus] / 100;
+      const heroClassMultiplier = 1 + actor.stats[unitStatRoleKeys.heroClassDamageBonus] / 100;
+      const skillTypeMultiplier = 1 + actor.stats[unitStatRoleKeys.skillTypeDamageBonus] / 100;
+      const skillMultiplier = actor.stats[unitStatRoleKeys.skillMultiplier] / 100;
+      const outputMultiplier = clampMultiplier(
+        1 + (actor.stats[unitStatRoleKeys.outputAmplify] - actor.stats[unitStatRoleKeys.outputDecay]) / 100,
+      );
+      const damageTakenMultiplier = clampMultiplier(
+        1 + (target.stats[unitStatRoleKeys.damageTakenAmplify] - target.stats[unitStatRoleKeys.damageTakenReduction]) / 100,
+      );
+      const finalDamageMultiplier = clampMultiplier(
+        1 + (actor.stats[unitStatRoleKeys.finalDamageBonus] - target.stats[unitStatRoleKeys.finalDamageReduction]) / 100,
+      );
+      const damageBeforeRound =
+        baseDamage *
+        armorMultiplier *
+        criticalMultiplier *
+        headshotMultiplier *
+        elementMultiplier *
+        scenarioMultiplier *
+        heroClassMultiplier *
+        skillTypeMultiplier *
+        skillMultiplier *
+        outputMultiplier *
+        damageTakenMultiplier *
+        finalDamageMultiplier;
+      const damage = Math.max(input.battle.minimumDamage, roundHalfUp(damageBeforeRound));
       target.currentHp = Math.max(0, target.currentHp - damage);
       target.isAlive = target.currentHp > 0;
+      const targetMaxHp = getEffectiveMaxHp(target.stats);
+      const damageTags = `${isHeadshot ? "爆头" : ""}${isCritical ? "暴击" : ""}`;
 
       createEvent(events, {
         type: "damage_applied",
         round,
         actorId: actor.id,
         targetId: target.id,
-        summary: `${actor.name} 对 ${target.name} 造成 ${damage} 点${isCritical ? "暴击" : ""}伤害，目标剩余 ${target.currentHp} HP`,
+        summary: `${actor.name} 对 ${target.name} 造成 ${damage} 点${damageTags}伤害，目标剩余 ${target.currentHp}/${targetMaxHp} HP${isMinimumDamageByDefense ? "（不破防）" : ""}`,
         payload: {
           damage,
+          baseDamage,
           targetHp: target.currentHp,
+          targetMaxHp,
           isCritical,
+          criticalMultiplier: roundToTwoDecimals(criticalMultiplier * 100),
+          isHeadshot,
+          headshotMultiplier: roundToTwoDecimals(headshotMultiplier * 100),
+          armorValue: target.stats[unitStatRoleKeys.armor],
+          armorPenetration: actor.stats[unitStatRoleKeys.armorPenetration],
+          armorReductionRate: roundToTwoDecimals(armorReductionRate * 100),
+          armorMultiplier: roundToTwoDecimals(armorMultiplier * 100),
+          elementRelation,
+          elementMultiplier: roundToTwoDecimals(elementMultiplier * 100),
+          scenarioMultiplier: roundToTwoDecimals(scenarioMultiplier * 100),
+          heroClassMultiplier: roundToTwoDecimals(heroClassMultiplier * 100),
+          skillTypeMultiplier: roundToTwoDecimals(skillTypeMultiplier * 100),
+          skillMultiplier: roundToTwoDecimals(skillMultiplier * 100),
+          outputMultiplier: roundToTwoDecimals(outputMultiplier * 100),
+          damageTakenMultiplier: roundToTwoDecimals(damageTakenMultiplier * 100),
+          finalDamageMultiplier: roundToTwoDecimals(finalDamageMultiplier * 100),
+          isMinimumDamageByDefense,
           effectiveAttack,
           effectiveDefense,
         },
@@ -273,7 +401,7 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
     summary:
       winnerTeamId === null
         ? "战斗结束，结果为平局"
-        : `战斗结束，胜利方为 ${input.battle.teamNames[winnerTeamId]}`,
+        : `战斗结束，${input.battle.teamNames[winnerTeamId]}胜利！`,
     payload: {
       winnerTeamId,
       aliveA: aliveA.length,

@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripTypeScriptTypes } from "node:module";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -78,7 +78,10 @@ export async function buildProject() {
   );
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isDirectRun =
+  process.argv[1] != null && import.meta.url === String(pathToFileURL(path.resolve(process.argv[1])));
+
+if (isDirectRun) {
   await buildProject();
   console.log("Build completed.");
 }

@@ -24,10 +24,18 @@ function resolveRequestPath(urlPath) {
   return path.join(distDir, relativePath);
 }
 
-await buildProject();
+let pendingBuild = Promise.resolve();
+
+function ensureBuild() {
+  pendingBuild = pendingBuild.then(() => buildProject());
+  return pendingBuild;
+}
+
+await ensureBuild();
 
 const server = createServer(async (request, response) => {
   try {
+    await ensureBuild();
     const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
     const filePath = resolveRequestPath(requestUrl.pathname);
     const file = await fs.readFile(filePath);

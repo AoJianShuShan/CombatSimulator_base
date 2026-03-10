@@ -46,7 +46,7 @@ class BattleRequestHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             validate_battle_input(payload)
             result = simulate_battle(payload)
-        except ValueError as error:
+        except (OverflowError, ValueError) as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"message": str(error)})
             return
         except KeyError as error:
@@ -67,11 +67,20 @@ class BattleRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("请求体不能为空")
 
         raw_body = self.rfile.read(content_length)
-        payload = json.loads(raw_body.decode("utf-8"))
+        try:
+            body_text = raw_body.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("请求体必须是 UTF-8 编码") from error
+
+        payload = json.loads(body_text, parse_constant=self._reject_json_constant)
         if not isinstance(payload, dict):
             raise ValueError("请求体必须是对象")
 
         return payload
+
+    @staticmethod
+    def _reject_json_constant(value: str) -> Any:
+        raise ValueError(f"请求体包含不支持的特殊数值: {value}")
 
     def _send_empty_response(self, status: HTTPStatus) -> None:
         self.send_response(status)
@@ -80,7 +89,7 @@ class BattleRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.send_response(status)
         self._send_cors_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")

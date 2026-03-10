@@ -1,7 +1,36 @@
 import { createDefaultUnitStats } from "./attributeMacros.ts";
+import { battleNumberDefaults } from "./battleConfigMacros.ts";
 
 export type TeamId = "A" | "B";
 export type TargetingStrategy = "front" | "lowestHp" | "highestAttack";
+export type UnitPosition = "front" | "middle" | "back";
+export type AttackElement = "none" | "physical" | "fire" | "electromagnetic" | "corrosive";
+export type ProtectionType = "none" | "heatArmor" | "insulatedArmor" | "bioArmor" | "heavyArmor";
+
+export const unitPositionOrder: UnitPosition[] = ["front", "middle", "back"];
+export const unitPositionLabels: Record<UnitPosition, string> = {
+  front: "前排",
+  middle: "中排",
+  back: "后排",
+};
+
+export const attackElementLabels: Record<AttackElement, string> = {
+  none: "无",
+  physical: "物理",
+  fire: "火焰",
+  electromagnetic: "电磁",
+  corrosive: "腐蚀",
+};
+export const attackElementOrder: AttackElement[] = ["none", "physical", "fire", "electromagnetic", "corrosive"];
+
+export const protectionTypeLabels: Record<ProtectionType, string> = {
+  none: "无",
+  heatArmor: "隔热甲",
+  insulatedArmor: "绝缘甲",
+  bioArmor: "生化甲",
+  heavyArmor: "重甲",
+};
+export const protectionTypeOrder: ProtectionType[] = ["none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"];
 
 export interface UnitStats {
   maxHp: number;
@@ -15,12 +44,29 @@ export interface UnitStats {
   critMultiplier: number;
   hitChance: number;
   dodgeChance: number;
+  armor: number;
+  armorPenetration: number;
+  headshotChance: number;
+  headshotMultiplier: number;
+  scenarioDamageBonus: number;
+  heroClassDamageBonus: number;
+  skillTypeDamageBonus: number;
+  finalDamageBonus: number;
+  finalDamageReduction: number;
+  skillMultiplier: number;
+  outputAmplify: number;
+  outputDecay: number;
+  damageTakenAmplify: number;
+  damageTakenReduction: number;
 }
 
 export interface UnitConfig {
   id: string;
   teamId: TeamId;
   name: string;
+  position: UnitPosition;
+  attackElement: AttackElement;
+  protectionType: ProtectionType;
   stats: UnitStats;
   extras?: Record<string, boolean | number | string>;
 }
@@ -30,6 +76,10 @@ export interface BattleConfig {
   minimumDamage: number;
   randomSeed: number;
   targetingStrategy: TargetingStrategy;
+  armorFormulaBase: number;
+  maxArmorDamageReduction: number;
+  elementAdvantageDamageRate: number;
+  elementDisadvantageDamageRate: number;
   teamNames: Record<TeamId, string>;
   extras?: Record<string, boolean | number | string>;
 }
@@ -76,6 +126,10 @@ export function createBattleRandomSeed() {
   return Math.trunc(Date.now()) >>> 0;
 }
 
+export function getDefaultUnitPosition(order: number): UnitPosition {
+  return unitPositionOrder[(Math.max(1, order) - 1) % unitPositionOrder.length];
+}
+
 export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
   const prefix = teamId === "A" ? "红" : "蓝";
 
@@ -83,6 +137,9 @@ export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
     id: `${teamId}-${order}`,
     teamId,
     name: `${prefix}方单位${order}`,
+    position: getDefaultUnitPosition(order),
+    attackElement: "none",
+    protectionType: "none",
     stats: {
       ...createDefaultUnitStats(),
       speed: Math.max(1, 10 - order),
@@ -94,8 +151,7 @@ export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
 export function createDefaultBattleInput(): BattleInput {
   return {
     battle: {
-      maxRounds: 20,
-      minimumDamage: 1,
+      ...battleNumberDefaults,
       randomSeed: createBattleRandomSeed(),
       targetingStrategy: "front",
       teamNames: {

@@ -10,13 +10,15 @@ await buildProject();
 
 const moduleUrl = pathToFileURL(path.join(rootDir, "dist", "simulator", "simulateBattle.js")).href;
 const attributeMacroModuleUrl = pathToFileURL(path.join(rootDir, "dist", "domain", "attributeMacros.js")).href;
+const battleConfigMacroModuleUrl = pathToFileURL(path.join(rootDir, "dist", "domain", "battleConfigMacros.js")).href;
 const { simulateBattle } = await import(moduleUrl);
 const { createDefaultUnitStats } = await import(attributeMacroModuleUrl);
+const { battleNumberDefaults } = await import(battleConfigMacroModuleUrl);
 
 const input = {
   battle: {
+    ...battleNumberDefaults,
     maxRounds: 20,
-    minimumDamage: 1,
     randomSeed: 20260310,
     targetingStrategy: "highestAttack",
     teamNames: {
@@ -29,6 +31,9 @@ const input = {
       id: "A-1",
       teamId: "A",
       name: "战士A1",
+      position: "front",
+      attackElement: "physical",
+      protectionType: "heavyArmor",
       stats: {
         ...createDefaultUnitStats(),
         maxHp: 30,
@@ -48,6 +53,9 @@ const input = {
       id: "A-2",
       teamId: "A",
       name: "战士A2",
+      position: "middle",
+      attackElement: "fire",
+      protectionType: "heatArmor",
       stats: {
         ...createDefaultUnitStats(),
         maxHp: 24,
@@ -67,6 +75,9 @@ const input = {
       id: "B-1",
       teamId: "B",
       name: "战士B1",
+      position: "front",
+      attackElement: "electromagnetic",
+      protectionType: "bioArmor",
       stats: {
         ...createDefaultUnitStats(),
         maxHp: 25,
@@ -86,6 +97,9 @@ const input = {
       id: "B-2",
       teamId: "B",
       name: "战士B2",
+      position: "back",
+      attackElement: "corrosive",
+      protectionType: "insulatedArmor",
       stats: {
         ...createDefaultUnitStats(),
         maxHp: 32,

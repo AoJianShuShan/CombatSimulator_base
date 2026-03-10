@@ -11,7 +11,7 @@
     },
     {
       "key": "maxHpRate",
-      "label": "生命百分比",
+      "label": "生命%",
       "default": 0,
       "min": -100,
       "step": 1,
@@ -27,7 +27,7 @@
     },
     {
       "key": "attackRate",
-      "label": "攻击百分比",
+      "label": "攻击%",
       "default": 0,
       "min": -100,
       "step": 1,
@@ -43,7 +43,7 @@
     },
     {
       "key": "defenseRate",
-      "label": "防御百分比",
+      "label": "防御%",
       "default": 0,
       "min": -100,
       "step": 1,
@@ -59,7 +59,7 @@
     },
     {
       "key": "critChance",
-      "label": "暴击几率",
+      "label": "暴击率%",
       "default": 0,
       "min": 0,
       "step": 1,
@@ -67,7 +67,7 @@
     },
     {
       "key": "critMultiplier",
-      "label": "暴击倍率",
+      "label": "暴击倍率%",
       "default": 150,
       "min": 0,
       "step": 1,
@@ -75,7 +75,7 @@
     },
     {
       "key": "hitChance",
-      "label": "命中",
+      "label": "命中%",
       "default": 100,
       "min": 0,
       "step": 1,
@@ -83,11 +83,123 @@
     },
     {
       "key": "dodgeChance",
-      "label": "闪避",
+      "label": "闪避%",
       "default": 0,
       "min": 0,
       "step": 1,
       "role": "dodgeChance"
+    },
+    {
+      "key": "armor",
+      "label": "护甲",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "armor"
+    },
+    {
+      "key": "armorPenetration",
+      "label": "穿甲",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "armorPenetration"
+    },
+    {
+      "key": "headshotChance",
+      "label": "爆头率%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "headshotChance"
+    },
+    {
+      "key": "headshotMultiplier",
+      "label": "爆头倍率%",
+      "default": 200,
+      "min": 0,
+      "step": 1,
+      "role": "headshotMultiplier"
+    },
+    {
+      "key": "scenarioDamageBonus",
+      "label": "玩法场景增伤%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "scenarioDamageBonus"
+    },
+    {
+      "key": "heroClassDamageBonus",
+      "label": "英雄职业增伤%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "heroClassDamageBonus"
+    },
+    {
+      "key": "skillTypeDamageBonus",
+      "label": "技能类型增伤%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "skillTypeDamageBonus"
+    },
+    {
+      "key": "finalDamageBonus",
+      "label": "最终增伤%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "finalDamageBonus"
+    },
+    {
+      "key": "finalDamageReduction",
+      "label": "最终减伤%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "finalDamageReduction"
+    },
+    {
+      "key": "skillMultiplier",
+      "label": "技能倍率%",
+      "default": 100,
+      "min": 0,
+      "step": 1,
+      "role": "skillMultiplier"
+    },
+    {
+      "key": "outputAmplify",
+      "label": "输出增幅%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "outputAmplify"
+    },
+    {
+      "key": "outputDecay",
+      "label": "输出衰减%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "outputDecay"
+    },
+    {
+      "key": "damageTakenAmplify",
+      "label": "承伤加深%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "damageTakenAmplify"
+    },
+    {
+      "key": "damageTakenReduction",
+      "label": "承伤减免%",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "damageTakenReduction"
     }
   ]
 }

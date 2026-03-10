@@ -1,0 +1,58 @@
+{
+  "requiredRule": "重要：新增整场战斗数值参数前，必须先更新 battle-config-macros.json。前端 UI、默认值、导入兼容、前后端校验、测试与文档都必须复用同一份整场战斗参数定义，禁止各处重复硬编码参数口径。",
+  "battleNumberFields": [
+    {
+      "key": "maxRounds",
+      "label": "最大回合数",
+      "default": 200,
+      "min": 1,
+      "step": 1
+    },
+    {
+      "key": "minimumDamage",
+      "label": "最小伤害",
+      "default": 1,
+      "min": 1,
+      "step": 1
+    },
+    {
+      "key": "armorFormulaBase",
+      "label": "护甲公式参数 a",
+      "default": 200,
+      "min": 0,
+      "step": 1
+    },
+    {
+      "key": "maxArmorDamageReduction",
+      "label": "护甲减伤上限%",
+      "default": 75,
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "suffix": "%"
+    },
+    {
+      "key": "elementAdvantageDamageRate",
+      "label": "元素克制造伤%",
+      "default": 120,
+      "min": 0,
+      "step": 1,
+      "suffix": "%"
+    },
+    {
+      "key": "elementDisadvantageDamageRate",
+      "label": "元素被克造伤%",
+      "default": 80,
+      "min": 0,
+      "step": 1,
+      "suffix": "%"
+    },
+    {
+      "key": "randomSeed",
+      "label": "随机种子",
+      "default": 1,
+      "min": 0,
+      "step": 1
+    }
+  ]
+}
