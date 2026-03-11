@@ -51,6 +51,7 @@ type SimulationMode = "local" | "backend";
 type SimulationView = "single" | "batch";
 type MessageTone = "error" | "success";
 type HeroMetaTone = "a" | "accent" | "b" | "blue" | "neutral";
+type ThemeMode = "light" | "dark";
 
 interface RenderStateSnapshot {
   scrollX: number;
@@ -85,6 +86,7 @@ interface AppState {
   draft: BattleInput;
   result: BattleSimulationResult | null;
   batchSummary: BattleBatchSummaryResult | null;
+  themeMode: ThemeMode;
   simulationMode: SimulationMode;
   simulationView: SimulationView;
   batchCount: number;
@@ -102,10 +104,25 @@ interface AppState {
   };
 }
 
+const themeModeStorageKey = "combat-simulator-theme-mode";
+
+function getInitialThemeMode(): ThemeMode {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+
+  try {
+    return window.localStorage.getItem(themeModeStorageKey) === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
 const state: AppState = {
   draft: createDefaultBattleInput(),
   result: null,
   batchSummary: null,
+  themeMode: getInitialThemeMode(),
   simulationMode: "local",
   simulationView: "single",
   batchCount: 100,
@@ -251,6 +268,37 @@ function setMessage(message: string | null, tone: MessageTone = "success") {
 function clearMessage() {
   state.message = null;
   state.messageTone = "success";
+}
+
+function persistThemeMode() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(themeModeStorageKey, state.themeMode);
+  } catch {
+    // 忽略本地持久化失败，页面仍可继续使用。
+  }
+}
+
+function applyThemeMode() {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  document.documentElement.dataset.theme = state.themeMode;
+}
+
+function updateThemeMode(nextValue: string) {
+  const nextThemeMode: ThemeMode = nextValue === "dark" ? "dark" : "light";
+  if (state.themeMode === nextThemeMode) {
+    return;
+  }
+
+  state.themeMode = nextThemeMode;
+  persistThemeMode();
+  applyThemeMode();
 }
 
 function invalidateResult() {
@@ -960,6 +1008,34 @@ function renderHeroMeta(items: Array<{ label: string; tone?: HeroMetaTone; value
           `,
         )
         .join("")}
+    </div>
+  `;
+}
+
+function renderThemeSwitcher() {
+  return `
+    <div class="theme-switcher" role="group" aria-label="界面主题切换">
+      <span class="theme-switcher-label">界面主题</span>
+      <div class="theme-switcher-options">
+        <button
+          type="button"
+          class="theme-switcher-button ${state.themeMode === "light" ? "is-active" : ""}"
+          data-action="switch-theme"
+          data-theme="light"
+          aria-pressed="${state.themeMode === "light"}"
+        >
+          白天
+        </button>
+        <button
+          type="button"
+          class="theme-switcher-button ${state.themeMode === "dark" ? "is-active" : ""}"
+          data-action="switch-theme"
+          data-theme="dark"
+          aria-pressed="${state.themeMode === "dark"}"
+        >
+          夜间
+        </button>
+      </div>
     </div>
   `;
 }
@@ -1781,6 +1857,7 @@ function renderUnitEditorPage() {
 
   return `
     <main class="page page-subpage">
+      ${renderThemeSwitcher()}
       <section class="hero hero-subpage">
         <button class="button button-ghost" data-action="close-unit-editor">返回编队总览</button>
         <div class="hero-content">
@@ -2076,6 +2153,7 @@ function renderMainPage() {
 
   return `
     <main class="page">
+      ${renderThemeSwitcher()}
       <section class="hero">
         <div class="hero-kicker">内部工具 · 战斗规则验证</div>
         <h1>基础战斗模拟器</h1>
@@ -2256,6 +2334,7 @@ function renderMainPage() {
 }
 
 function renderApp(container: HTMLElement) {
+  applyThemeMode();
   const snapshot = captureRenderState();
   container.innerHTML = state.editingUnitId ? renderUnitEditorPage() : renderMainPage();
   bindEvents(container);
@@ -2460,6 +2539,13 @@ function bindEvents(container: HTMLElement) {
     });
   });
 
+  container.querySelectorAll<HTMLButtonElement>("[data-action='switch-theme']").forEach((button) => {
+    button.addEventListener("click", () => {
+      updateThemeMode(button.dataset.theme ?? "light");
+      renderApp(container);
+    });
+  });
+
   container.querySelector<HTMLSelectElement>("[data-action='update-simulation-mode']")?.addEventListener("change", (event) => {
     const target = event.currentTarget as HTMLSelectElement;
     updateSimulationMode((target.value as SimulationMode) ?? "local");
@@ -2619,5 +2705,6 @@ function bindEvents(container: HTMLElement) {
 }
 
 export function mountApp(container: HTMLElement) {
+  applyThemeMode();
   renderApp(container);
 }
