@@ -9,6 +9,7 @@ from backend.battle_config_macros import get_battle_number_macros
 
 SUPPORTED_TEAM_IDS = {"A", "B"}
 SUPPORTED_TARGETING_STRATEGIES = {"front", "lowestHp", "highestAttack"}
+SUPPORTED_ACTION_RESOLUTION_MODES = {"arpgSimultaneous", "turnBasedSpeed"}
 SUPPORTED_UNIT_POSITIONS = {"front", "middle", "back"}
 SUPPORTED_ATTACK_ELEMENTS = {"none", "physical", "fire", "electromagnetic", "corrosive"}
 SUPPORTED_PROTECTION_TYPES = {"none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"}
@@ -93,6 +94,7 @@ def validate_battle_batch_request(payload: dict[str, Any]) -> None:
 
 def _validate_battle_config(battle: dict[str, Any]) -> None:
     targeting_strategy = battle.get("targetingStrategy")
+    action_resolution_mode = battle.get("actionResolutionMode")
     team_names = _require_object(battle.get("teamNames"), "battle.teamNames")
 
     for macro in get_battle_number_macros():
@@ -111,6 +113,9 @@ def _validate_battle_config(battle: dict[str, Any]) -> None:
 
     if targeting_strategy not in SUPPORTED_TARGETING_STRATEGIES:
         raise ValueError(f"battle.targetingStrategy 不支持: {targeting_strategy}")
+
+    if action_resolution_mode not in SUPPORTED_ACTION_RESOLUTION_MODES:
+        raise ValueError(f"battle.actionResolutionMode 不支持: {action_resolution_mode}")
 
     for team_id in sorted(SUPPORTED_TEAM_IDS):
         _require_string(team_names.get(team_id), f"battle.teamNames.{team_id}")

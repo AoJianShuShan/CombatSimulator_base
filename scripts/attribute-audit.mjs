@@ -128,6 +128,14 @@ function sortTurnOrder(units) {
     });
 }
 
+function getActionOrder(units, actionResolutionMode) {
+  if (actionResolutionMode === "arpgSimultaneous") {
+    return [...units].sort((left, right) => left.initialOrder - right.initialOrder);
+  }
+
+  return sortTurnOrder(units);
+}
+
 function pickTarget(units, actor, targetingStrategy) {
   const targets = units.filter((unit) => unit.teamId !== actor.teamId);
   if (targets.length === 0) {
@@ -169,6 +177,7 @@ function createBaseInput({ actor = {}, actorStats = {}, battle = {}, target = {}
       minimumDamage: 1,
       randomSeed: 20260310,
       targetingStrategy: "front",
+      actionResolutionMode: "turnBasedSpeed",
       armorFormulaBase: 200,
       maxArmorDamageReduction: 75,
       elementAdvantageDamageRate: 120,
@@ -297,7 +306,7 @@ function formatMetrics(metrics) {
 
 function computeExpectedFirstAction(input) {
   const runtimeUnits = input.units.map((unit, initialOrder) => ({ ...structuredClone(unit), initialOrder }));
-  const turnOrder = sortTurnOrder(runtimeUnits);
+  const turnOrder = getActionOrder(runtimeUnits, input.battle.actionResolutionMode);
   const actor = turnOrder[0] ?? null;
   const target = actor ? pickTarget(runtimeUnits, actor, input.battle.targetingStrategy) : null;
   const focusActorTurnIndex = turnOrder.findIndex((unit) => unit.id === ACTOR_ID);

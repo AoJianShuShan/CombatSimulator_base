@@ -5,6 +5,7 @@ import {
   battleConfigNumberMacros,
 } from "./battleConfigMacros.ts";
 import type {
+  ActionResolutionMode,
   AttackElement,
   BattleBatchRequest,
   BattleInput,
@@ -28,6 +29,7 @@ interface NumberRule {
 
 const supportedTeamIds: TeamId[] = ["A", "B"];
 const supportedTargetingStrategies = new Set<TargetingStrategy>(["front", "lowestHp", "highestAttack"]);
+const supportedActionResolutionModes = new Set<ActionResolutionMode>(["arpgSimultaneous", "turnBasedSpeed"]);
 const supportedUnitPositions = new Set<UnitPosition>(["front", "middle", "back"]);
 const supportedAttackElements = new Set<AttackElement>(["none", "physical", "fire", "electromagnetic", "corrosive"]);
 const supportedProtectionTypes = new Set<ProtectionType>(["none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"]);
@@ -131,6 +133,10 @@ export function validateBattleInput(input: BattleInput) {
 
   if (!supportedTargetingStrategies.has(input.battle.targetingStrategy)) {
     return `目标策略不支持: ${input.battle.targetingStrategy}`;
+  }
+
+  if (!supportedActionResolutionModes.has(input.battle.actionResolutionMode)) {
+    return `行动结算模式不支持: ${input.battle.actionResolutionMode}`;
   }
 
   if (input.units.length === 0) {

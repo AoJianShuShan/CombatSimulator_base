@@ -5,6 +5,7 @@ from typing import Literal, NotRequired, TypedDict
 
 TeamId = Literal["A", "B"]
 TargetingStrategy = Literal["front", "lowestHp", "highestAttack"]
+ActionResolutionMode = Literal["arpgSimultaneous", "turnBasedSpeed"]
 UnitPosition = Literal["front", "middle", "back"]
 AttackElement = Literal["none", "physical", "fire", "electromagnetic", "corrosive"]
 ProtectionType = Literal["none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"]
@@ -54,6 +55,7 @@ class BattleConfig(TypedDict):
     minimumDamage: int
     randomSeed: int
     targetingStrategy: TargetingStrategy
+    actionResolutionMode: ActionResolutionMode
     armorFormulaBase: int | float
     maxArmorDamageReduction: int | float
     elementAdvantageDamageRate: int | float

@@ -23,6 +23,7 @@ const input = {
     maxRounds: 20,
     randomSeed: 20260310,
     targetingStrategy: "highestAttack",
+    actionResolutionMode: "arpgSimultaneous",
     teamNames: {
       A: "红队",
       B: "蓝队",
@@ -124,6 +125,106 @@ const result = simulateBattle(input);
 const replayResult = simulateBattle(input);
 const batchResult = simulateBattleBatchSummary(input, 8);
 const singleBatchResult = simulateBattleBatchSummary(input, 1);
+const simultaneousDrawResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 1,
+    minimumDamage: 1,
+    randomSeed: 20260311,
+    targetingStrategy: "front",
+    actionResolutionMode: "arpgSimultaneous",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "同步红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 10,
+        attack: 99,
+        defense: 0,
+        speed: 1,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "同步蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 10,
+        attack: 99,
+        defense: 0,
+        speed: 99,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
+const turnBasedResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 1,
+    minimumDamage: 1,
+    randomSeed: 20260311,
+    targetingStrategy: "front",
+    actionResolutionMode: "turnBasedSpeed",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "速度红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 10,
+        attack: 99,
+        defense: 0,
+        speed: 1,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "速度蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 10,
+        attack: 99,
+        defense: 0,
+        speed: 99,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
 
 if (JSON.stringify(result) !== JSON.stringify(replayResult)) {
   throw new Error("相同随机种子未得到完全一致的战斗结果");
@@ -176,6 +277,21 @@ if (
   throw new Error("count = 1 的批量摘要终局净优势统计不一致");
 }
 
+if (
+  simultaneousDrawResult.winnerTeamId !== null ||
+  simultaneousDrawResult.finalUnits.some((unit) => unit.isAlive)
+) {
+  throw new Error("Arpg同时出手模式未正确处理同归于尽");
+}
+
+if (
+  turnBasedResult.winnerTeamId !== "B" ||
+  turnBasedResult.finalUnits.find((unit) => unit.id === "A-1")?.isAlive !== false ||
+  turnBasedResult.finalUnits.find((unit) => unit.id === "B-1")?.isAlive !== true
+) {
+  throw new Error("回合制速度高者先手模式未正确按速度决定先手");
+}
+
 console.log(
   JSON.stringify(
     {
@@ -185,6 +301,8 @@ console.log(
       eventCount: result.events.length,
       finalTimeIndex: result.events.at(-1)?.timeIndex ?? null,
       survivingUnits: result.finalUnits.filter((unit) => unit.isAlive).map((unit) => unit.name),
+      simultaneousDrawWinner: simultaneousDrawResult.winnerTeamId,
+      turnBasedWinner: turnBasedResult.winnerTeamId,
       batchSummary: batchResult,
     },
     null,

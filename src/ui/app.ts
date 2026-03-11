@@ -9,6 +9,9 @@ import {
   type BattleNumberFieldKey,
 } from "../domain/battleConfigMacros.ts";
 import {
+  actionResolutionModeLabels,
+  actionResolutionModeOrder,
+  type ActionResolutionMode,
   attackElementLabels,
   attackElementOrder,
   type AttackElement,
@@ -487,7 +490,7 @@ function updateUnitStat(unitId: string, field: string, rawValue: string) {
 }
 
 function updateBattleField(
-  field: BattleNumberFieldKey | "targetingStrategy",
+  field: BattleNumberFieldKey | "targetingStrategy" | "actionResolutionMode",
   rawValue: string,
 ) {
   if (field === "targetingStrategy") {
@@ -495,6 +498,15 @@ function updateBattleField(
     state.draft.battle = {
       ...state.draft.battle,
       targetingStrategy: rawValue as TargetingStrategy,
+    };
+    return;
+  }
+
+  if (field === "actionResolutionMode") {
+    invalidateResult();
+    state.draft.battle = {
+      ...state.draft.battle,
+      actionResolutionMode: rawValue as ActionResolutionMode,
     };
     return;
   }
@@ -1218,6 +1230,13 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
 
   switch (event.type) {
     case "battle_started":
+      if (typeof payload.actionResolutionMode === "string") {
+        rows.push({
+          label: "行动结算模式",
+          value:
+            actionResolutionModeLabels[payload.actionResolutionMode as ActionResolutionMode] ?? payload.actionResolutionMode,
+        });
+      }
       if (typeof payload.maxRounds === "number") {
         rows.push({ label: battleConfigNumberMacroMap.maxRounds.label, value: formatBattleConfigValue("maxRounds", payload.maxRounds) });
       }
@@ -1242,6 +1261,13 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       });
       break;
     case "round_started":
+      if (typeof payload.actionResolutionMode === "string") {
+        rows.push({
+          label: "行动结算模式",
+          value:
+            actionResolutionModeLabels[payload.actionResolutionMode as ActionResolutionMode] ?? payload.actionResolutionMode,
+        });
+      }
       if (typeof payload.aliveA === "number") {
         rows.push({ label: "红方存活数", value: `${payload.aliveA}` });
       }
@@ -1326,6 +1352,13 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       }
       break;
     case "battle_ended":
+      if (typeof payload.actionResolutionMode === "string") {
+        rows.push({
+          label: "行动结算模式",
+          value:
+            actionResolutionModeLabels[payload.actionResolutionMode as ActionResolutionMode] ?? payload.actionResolutionMode,
+        });
+      }
       if (payload.winnerTeamId === null) {
         rows.push({ label: "战斗结果", value: "平局" });
       } else if (payload.winnerTeamId === "A" || payload.winnerTeamId === "B") {
@@ -1948,8 +1981,19 @@ function renderMainPage() {
                 </select>
               </div>
               <div class="field">
-                <label>行动顺序</label>
-                <input value="按速度降序" disabled />
+                <label>行动结算模式</label>
+                <select
+                  data-action="update-battle"
+                  data-field="actionResolutionMode"
+                  data-focus-key="battle:actionResolutionMode"
+                >
+                  ${actionResolutionModeOrder
+                    .map(
+                      (value) =>
+                        `<option value="${value}" ${state.draft.battle.actionResolutionMode === value ? "selected" : ""}>${escapeHtml(actionResolutionModeLabels[value])}</option>`,
+                    )
+                    .join("")}
+                </select>
               </div>
             </div>
             ${renderMessage()}
@@ -2187,7 +2231,7 @@ function bindEvents(container: HTMLElement) {
     input.addEventListener("change", (event) => {
       const target = event.currentTarget as HTMLInputElement | HTMLSelectElement;
       updateBattleField(
-        (target.dataset.field as BattleNumberFieldKey | "targetingStrategy") ?? "maxRounds",
+        (target.dataset.field as BattleNumberFieldKey | "targetingStrategy" | "actionResolutionMode") ?? "maxRounds",
         target.value,
       );
       renderApp(container);

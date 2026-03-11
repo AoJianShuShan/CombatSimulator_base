@@ -3,6 +3,7 @@ import { battleNumberDefaults } from "./battleConfigMacros.ts";
 
 export type TeamId = "A" | "B";
 export type TargetingStrategy = "front" | "lowestHp" | "highestAttack";
+export type ActionResolutionMode = "arpgSimultaneous" | "turnBasedSpeed";
 export type UnitPosition = "front" | "middle" | "back";
 export type AttackElement = "none" | "physical" | "fire" | "electromagnetic" | "corrosive";
 export type ProtectionType = "none" | "heatArmor" | "insulatedArmor" | "bioArmor" | "heavyArmor";
@@ -31,6 +32,12 @@ export const protectionTypeLabels: Record<ProtectionType, string> = {
   heavyArmor: "重甲",
 };
 export const protectionTypeOrder: ProtectionType[] = ["none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"];
+
+export const actionResolutionModeLabels: Record<ActionResolutionMode, string> = {
+  arpgSimultaneous: "Arpg同时出手",
+  turnBasedSpeed: "回合制速度高者先手",
+};
+export const actionResolutionModeOrder: ActionResolutionMode[] = ["arpgSimultaneous", "turnBasedSpeed"];
 
 export interface UnitStats {
   maxHp: number;
@@ -76,6 +83,7 @@ export interface BattleConfig {
   minimumDamage: number;
   randomSeed: number;
   targetingStrategy: TargetingStrategy;
+  actionResolutionMode: ActionResolutionMode;
   armorFormulaBase: number;
   maxArmorDamageReduction: number;
   elementAdvantageDamageRate: number;
@@ -174,6 +182,7 @@ export function createDefaultBattleInput(): BattleInput {
       ...battleNumberDefaults,
       randomSeed: createBattleRandomSeed(),
       targetingStrategy: "front",
+      actionResolutionMode: "arpgSimultaneous",
       teamNames: {
         A: "红方",
         B: "蓝方",

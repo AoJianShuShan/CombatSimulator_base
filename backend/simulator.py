@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from backend.attribute_macros import get_unit_stat_role_keys
 from backend.models import (
+    ActionResolutionMode,
     AttackElement,
     BattleBatchSummaryResult,
     BattleInput,
@@ -18,6 +19,7 @@ from backend.models import (
 
 
 RuntimeUnit = dict[str, Any]
+AttackResolution = dict[str, Any]
 UNIT_STAT_ROLE_KEYS = get_unit_stat_role_keys()
 UNIT_POSITION_PRIORITY: dict[UnitPosition, int] = {
     "front": 0,
@@ -165,6 +167,13 @@ def _clone_unit(unit: UnitConfig, initial_order: int) -> RuntimeUnit:
     return runtime_unit
 
 
+def _clone_runtime_unit(unit: RuntimeUnit) -> RuntimeUnit:
+    return {
+        **unit,
+        "stats": dict(unit["stats"]),
+    }
+
+
 def _get_alive_units_by_team(units: list[RuntimeUnit], team_id: TeamId) -> list[RuntimeUnit]:
     return [unit for unit in units if unit["teamId"] == team_id and unit["isAlive"]]
 
@@ -190,6 +199,11 @@ def _sort_turn_order(units: list[RuntimeUnit]) -> list[RuntimeUnit]:
             int(unit["initialOrder"]),
         ),
     )
+
+
+def _get_simultaneous_action_order(units: list[RuntimeUnit]) -> list[RuntimeUnit]:
+    alive_units = [unit for unit in units if unit["isAlive"]]
+    return sorted(alive_units, key=lambda unit: int(unit["initialOrder"]))
 
 
 def _pick_target(
@@ -232,13 +246,321 @@ def _create_event(events: list[dict[str, Any]], event: dict[str, Any]) -> None:
     events.append({"sequence": len(events) + 1, "timeIndex": len(events), **event})
 
 
+def _resolve_attack(
+    battle_input: BattleInput,
+    random: SeededRandom,
+    actor: RuntimeUnit,
+    target: RuntimeUnit,
+) -> AttackResolution:
+    battle = battle_input["battle"]
+    effective_hit_chance = _clamp_percentage(
+        float(actor["stats"][UNIT_STAT_ROLE_KEYS["hitChance"]])
+        - float(target["stats"][UNIT_STAT_ROLE_KEYS["dodgeChance"]]),
+    )
+    hit_roll = random.next()
+    if hit_roll >= effective_hit_chance / 100:
+        return {
+            "type": "miss",
+            "actorId": actor["id"],
+            "actorName": actor["name"],
+            "targetId": target["id"],
+            "targetName": target["name"],
+            "targetMaxHp": _get_effective_max_hp(target),
+            "effectiveHitChance": effective_hit_chance,
+        }
+
+    effective_attack = _get_effective_attack(actor)
+    effective_defense = _get_effective_defense(target)
+    is_minimum_damage_by_defense = effective_attack - effective_defense < int(battle["minimumDamage"])
+    base_damage = max(
+        int(battle["minimumDamage"]),
+        effective_attack - effective_defense,
+    )
+    armor_reduction_rate = _get_armor_reduction_rate(battle, actor, target)
+    armor_multiplier = 1 - armor_reduction_rate
+    crit_roll = random.next()
+    is_critical = crit_roll < _clamp_percentage(float(actor["stats"][UNIT_STAT_ROLE_KEYS["critChance"]])) / 100
+    critical_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["critMultiplier"]]) / 100 if is_critical else 1.0
+    headshot_roll = random.next()
+    is_headshot = headshot_roll < _clamp_percentage(float(actor["stats"][UNIT_STAT_ROLE_KEYS["headshotChance"]])) / 100
+    headshot_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["headshotMultiplier"]]) / 100 if is_headshot else 1.0
+    element_relation, element_multiplier = _get_element_relation(battle, actor, target)
+    scenario_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["scenarioDamageBonus"]]) / 100
+    hero_class_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["heroClassDamageBonus"]]) / 100
+    skill_type_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["skillTypeDamageBonus"]]) / 100
+    skill_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["skillMultiplier"]]) / 100
+    output_multiplier = _clamp_multiplier(
+        1 + (
+            float(actor["stats"][UNIT_STAT_ROLE_KEYS["outputAmplify"]])
+            - float(actor["stats"][UNIT_STAT_ROLE_KEYS["outputDecay"]])
+        ) / 100,
+    )
+    damage_taken_multiplier = _clamp_multiplier(
+        1 + (
+            float(target["stats"][UNIT_STAT_ROLE_KEYS["damageTakenAmplify"]])
+            - float(target["stats"][UNIT_STAT_ROLE_KEYS["damageTakenReduction"]])
+        ) / 100,
+    )
+    final_damage_multiplier = _clamp_multiplier(
+        1 + (
+            float(actor["stats"][UNIT_STAT_ROLE_KEYS["finalDamageBonus"]])
+            - float(target["stats"][UNIT_STAT_ROLE_KEYS["finalDamageReduction"]])
+        ) / 100,
+    )
+    damage_before_round = (
+        base_damage
+        * armor_multiplier
+        * critical_multiplier
+        * headshot_multiplier
+        * element_multiplier
+        * scenario_multiplier
+        * hero_class_multiplier
+        * skill_type_multiplier
+        * skill_multiplier
+        * output_multiplier
+        * damage_taken_multiplier
+        * final_damage_multiplier
+    )
+    damage = max(int(battle["minimumDamage"]), _round_half_up(damage_before_round))
+
+    return {
+        "type": "damage",
+        "actorId": actor["id"],
+        "actorName": actor["name"],
+        "targetId": target["id"],
+        "targetName": target["name"],
+        "targetMaxHp": _get_effective_max_hp(target),
+        "damage": damage,
+        "baseDamage": base_damage,
+        "isCritical": is_critical,
+        "criticalMultiplier": critical_multiplier,
+        "isHeadshot": is_headshot,
+        "headshotMultiplier": headshot_multiplier,
+        "armorValue": float(target["stats"][UNIT_STAT_ROLE_KEYS["armor"]]),
+        "armorPenetration": float(actor["stats"][UNIT_STAT_ROLE_KEYS["armorPenetration"]]),
+        "armorReductionRate": armor_reduction_rate,
+        "armorMultiplier": armor_multiplier,
+        "elementRelation": element_relation,
+        "elementMultiplier": element_multiplier,
+        "scenarioMultiplier": scenario_multiplier,
+        "heroClassMultiplier": hero_class_multiplier,
+        "skillTypeMultiplier": skill_type_multiplier,
+        "skillMultiplier": skill_multiplier,
+        "outputMultiplier": output_multiplier,
+        "damageTakenMultiplier": damage_taken_multiplier,
+        "finalDamageMultiplier": final_damage_multiplier,
+        "isMinimumDamageByDefense": is_minimum_damage_by_defense,
+        "effectiveAttack": effective_attack,
+        "effectiveDefense": effective_defense,
+    }
+
+
+def _create_attack_missed_event(events: list[dict[str, Any]], round_index: int, resolution: AttackResolution) -> None:
+    _create_event(
+        events,
+        {
+            "type": "attack_missed",
+            "round": round_index,
+            "actorId": resolution["actorId"],
+            "targetId": resolution["targetId"],
+            "summary": f'{resolution["actorName"]} 攻击 {resolution["targetName"]}，但被闪避或未命中',
+            "payload": {
+                "hitChance": resolution["effectiveHitChance"],
+            },
+        },
+    )
+
+
+def _create_damage_applied_event(
+    events: list[dict[str, Any]],
+    round_index: int,
+    resolution: AttackResolution,
+    target_current_hp: int,
+) -> None:
+    damage_tags = f'{"爆头" if resolution["isHeadshot"] else ""}{"暴击" if resolution["isCritical"] else ""}'
+    _create_event(
+        events,
+        {
+            "type": "damage_applied",
+            "round": round_index,
+            "actorId": resolution["actorId"],
+            "targetId": resolution["targetId"],
+            "summary": f'{resolution["actorName"]} 对 {resolution["targetName"]} 造成 {resolution["damage"]} 点{damage_tags}伤害，目标剩余 {target_current_hp}/{resolution["targetMaxHp"]} HP{"（不破防）" if resolution["isMinimumDamageByDefense"] else ""}',
+            "payload": {
+                "damage": resolution["damage"],
+                "baseDamage": resolution["baseDamage"],
+                "targetHp": target_current_hp,
+                "targetMaxHp": resolution["targetMaxHp"],
+                "isCritical": resolution["isCritical"],
+                "criticalMultiplier": _round_to_two_decimals(float(resolution["criticalMultiplier"]) * 100),
+                "isHeadshot": resolution["isHeadshot"],
+                "headshotMultiplier": _round_to_two_decimals(float(resolution["headshotMultiplier"]) * 100),
+                "armorValue": resolution["armorValue"],
+                "armorPenetration": resolution["armorPenetration"],
+                "armorReductionRate": _round_to_two_decimals(float(resolution["armorReductionRate"]) * 100),
+                "armorMultiplier": _round_to_two_decimals(float(resolution["armorMultiplier"]) * 100),
+                "elementRelation": resolution["elementRelation"],
+                "elementMultiplier": _round_to_two_decimals(float(resolution["elementMultiplier"]) * 100),
+                "scenarioMultiplier": _round_to_two_decimals(float(resolution["scenarioMultiplier"]) * 100),
+                "heroClassMultiplier": _round_to_two_decimals(float(resolution["heroClassMultiplier"]) * 100),
+                "skillTypeMultiplier": _round_to_two_decimals(float(resolution["skillTypeMultiplier"]) * 100),
+                "skillMultiplier": _round_to_two_decimals(float(resolution["skillMultiplier"]) * 100),
+                "outputMultiplier": _round_to_two_decimals(float(resolution["outputMultiplier"]) * 100),
+                "damageTakenMultiplier": _round_to_two_decimals(float(resolution["damageTakenMultiplier"]) * 100),
+                "finalDamageMultiplier": _round_to_two_decimals(float(resolution["finalDamageMultiplier"]) * 100),
+                "isMinimumDamageByDefense": resolution["isMinimumDamageByDefense"],
+                "effectiveAttack": resolution["effectiveAttack"],
+                "effectiveDefense": resolution["effectiveDefense"],
+            },
+        },
+    )
+
+
+def _create_unit_defeated_event(
+    events: list[dict[str, Any]],
+    round_index: int,
+    target: RuntimeUnit,
+    actor_id: str | None = None,
+) -> None:
+    _create_event(
+        events,
+        {
+            "type": "unit_defeated",
+            "round": round_index,
+            "actorId": actor_id,
+            "targetId": target["id"],
+            "summary": f'{target["name"]} 被击败',
+        },
+    )
+
+
+def _run_sequential_round(
+    battle_input: BattleInput,
+    units: list[RuntimeUnit],
+    events: list[dict[str, Any]],
+    round_index: int,
+    random: SeededRandom,
+) -> None:
+    targeting_strategy = cast(TargetingStrategy, battle_input["battle"]["targetingStrategy"])
+
+    for actor in _sort_turn_order(units):
+        if not actor["isAlive"]:
+            continue
+
+        target = _pick_target(units, actor, targeting_strategy)
+        if target is None:
+            break
+
+        _create_event(
+            events,
+            {
+                "type": "turn_started",
+                "round": round_index,
+                "actorId": actor["id"],
+                "targetId": target["id"],
+                "summary": f'{actor["name"]} 对 {target["name"]} 发起攻击',
+            },
+        )
+
+        resolution = _resolve_attack(battle_input, random, actor, target)
+        if resolution["type"] == "miss":
+            _create_attack_missed_event(events, round_index, resolution)
+            continue
+
+        target["currentHp"] = max(0, int(target["currentHp"]) - int(resolution["damage"]))
+        target["isAlive"] = target["currentHp"] > 0
+        _create_damage_applied_event(events, round_index, resolution, int(target["currentHp"]))
+
+        if not target["isAlive"]:
+            _create_unit_defeated_event(events, round_index, target, cast(str, resolution["actorId"]))
+
+        remaining_enemies = _get_alive_units_by_team(
+            units,
+            _get_opponent_team_id(cast(TeamId, actor["teamId"])),
+        )
+        if not remaining_enemies:
+            break
+
+
+def _run_simultaneous_round(
+    battle_input: BattleInput,
+    units: list[RuntimeUnit],
+    events: list[dict[str, Any]],
+    round_index: int,
+    random: SeededRandom,
+) -> None:
+    targeting_strategy = cast(TargetingStrategy, battle_input["battle"]["targetingStrategy"])
+    snapshot_units = [_clone_runtime_unit(unit) for unit in units]
+    action_order = _get_simultaneous_action_order(snapshot_units)
+    resolutions: list[AttackResolution] = []
+
+    for actor in action_order:
+        target = _pick_target(snapshot_units, actor, targeting_strategy)
+        if target is None:
+            continue
+
+        _create_event(
+            events,
+            {
+                "type": "turn_started",
+                "round": round_index,
+                "actorId": actor["id"],
+                "targetId": target["id"],
+                "summary": f'{actor["name"]} 对 {target["name"]} 发起攻击',
+            },
+        )
+        resolutions.append(_resolve_attack(battle_input, random, actor, target))
+
+    defeated_ids: set[str] = set()
+    defeated_order: list[str] = []
+
+    for resolution in resolutions:
+        if resolution["type"] == "miss":
+            _create_attack_missed_event(events, round_index, resolution)
+            continue
+
+        target = next((unit for unit in units if unit["id"] == resolution["targetId"]), None)
+        if target is None:
+            continue
+
+        target["currentHp"] = max(0, int(target["currentHp"]) - int(resolution["damage"]))
+        target["isAlive"] = target["currentHp"] > 0
+        _create_damage_applied_event(events, round_index, resolution, int(target["currentHp"]))
+
+        if not target["isAlive"] and target["id"] not in defeated_ids:
+            defeated_ids.add(cast(str, target["id"]))
+            defeated_order.append(cast(str, target["id"]))
+
+    for target_id in defeated_order:
+        target = next((unit for unit in units if unit["id"] == target_id), None)
+        if target is None:
+            continue
+
+        _create_unit_defeated_event(events, round_index, target)
+
+
+def _resolve_round_by_mode(
+    action_resolution_mode: ActionResolutionMode,
+    battle_input: BattleInput,
+    units: list[RuntimeUnit],
+    events: list[dict[str, Any]],
+    round_index: int,
+    random: SeededRandom,
+) -> None:
+    if action_resolution_mode == "arpgSimultaneous":
+        _run_simultaneous_round(battle_input, units, events, round_index, random)
+        return
+
+    _run_sequential_round(battle_input, units, events, round_index, random)
+
+
 def simulate_battle(payload: BattleInput) -> dict[str, Any]:
     units = [_clone_unit(unit, index) for index, unit in enumerate(payload["units"])]
     events: list[dict[str, Any]] = []
     rounds_completed = 0
     battle = payload["battle"]
     random = SeededRandom(int(battle.get("randomSeed", 1)))
-    targeting_strategy = cast(TargetingStrategy, battle["targetingStrategy"])
+    action_resolution_mode = cast(ActionResolutionMode, battle["actionResolutionMode"])
 
     _create_event(
         events,
@@ -247,6 +569,7 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
             "round": 0,
             "summary": f'{battle["teamNames"]["A"]} 与 {battle["teamNames"]["B"]} 的战斗开始',
             "payload": {
+                "actionResolutionMode": action_resolution_mode,
                 "maxRounds": battle["maxRounds"],
                 "unitCount": len(units),
             },
@@ -267,165 +590,14 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
                 "round": round_index,
                 "summary": f"第 {round_index} 回合开始",
                 "payload": {
+                    "actionResolutionMode": action_resolution_mode,
                     "aliveA": len(team_a_alive),
                     "aliveB": len(team_b_alive),
                 },
             },
         )
 
-        for actor in _sort_turn_order(units):
-            if not actor["isAlive"]:
-                continue
-
-            target = _pick_target(units, actor, targeting_strategy)
-            if target is None:
-                break
-
-            _create_event(
-                events,
-                {
-                    "type": "turn_started",
-                    "round": round_index,
-                    "actorId": actor["id"],
-                    "targetId": target["id"],
-                    "summary": f'{actor["name"]} 对 {target["name"]} 发起攻击',
-                },
-            )
-
-            effective_hit_chance = _clamp_percentage(
-                float(actor["stats"][UNIT_STAT_ROLE_KEYS["hitChance"]])
-                - float(target["stats"][UNIT_STAT_ROLE_KEYS["dodgeChance"]]),
-            )
-            hit_roll = random.next()
-            if hit_roll >= effective_hit_chance / 100:
-                _create_event(
-                    events,
-                    {
-                        "type": "attack_missed",
-                        "round": round_index,
-                        "actorId": actor["id"],
-                        "targetId": target["id"],
-                        "summary": f'{actor["name"]} 攻击 {target["name"]}，但被闪避或未命中',
-                        "payload": {
-                            "hitChance": effective_hit_chance,
-                        },
-                    },
-                )
-                continue
-
-            effective_attack = _get_effective_attack(actor)
-            effective_defense = _get_effective_defense(target)
-            is_minimum_damage_by_defense = effective_attack - effective_defense < int(battle["minimumDamage"])
-            base_damage = max(
-                int(battle["minimumDamage"]),
-                effective_attack - effective_defense,
-            )
-            armor_reduction_rate = _get_armor_reduction_rate(battle, actor, target)
-            armor_multiplier = 1 - armor_reduction_rate
-            crit_roll = random.next()
-            is_critical = crit_roll < _clamp_percentage(float(actor["stats"][UNIT_STAT_ROLE_KEYS["critChance"]])) / 100
-            critical_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["critMultiplier"]]) / 100 if is_critical else 1.0
-            headshot_roll = random.next()
-            is_headshot = headshot_roll < _clamp_percentage(float(actor["stats"][UNIT_STAT_ROLE_KEYS["headshotChance"]])) / 100
-            headshot_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["headshotMultiplier"]]) / 100 if is_headshot else 1.0
-            element_relation, element_multiplier = _get_element_relation(battle, actor, target)
-            scenario_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["scenarioDamageBonus"]]) / 100
-            hero_class_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["heroClassDamageBonus"]]) / 100
-            skill_type_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["skillTypeDamageBonus"]]) / 100
-            skill_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["skillMultiplier"]]) / 100
-            output_multiplier = _clamp_multiplier(
-                1 + (
-                    float(actor["stats"][UNIT_STAT_ROLE_KEYS["outputAmplify"]])
-                    - float(actor["stats"][UNIT_STAT_ROLE_KEYS["outputDecay"]])
-                ) / 100,
-            )
-            damage_taken_multiplier = _clamp_multiplier(
-                1 + (
-                    float(target["stats"][UNIT_STAT_ROLE_KEYS["damageTakenAmplify"]])
-                    - float(target["stats"][UNIT_STAT_ROLE_KEYS["damageTakenReduction"]])
-                ) / 100,
-            )
-            final_damage_multiplier = _clamp_multiplier(
-                1 + (
-                    float(actor["stats"][UNIT_STAT_ROLE_KEYS["finalDamageBonus"]])
-                    - float(target["stats"][UNIT_STAT_ROLE_KEYS["finalDamageReduction"]])
-                ) / 100,
-            )
-            damage_before_round = (
-                base_damage
-                * armor_multiplier
-                * critical_multiplier
-                * headshot_multiplier
-                * element_multiplier
-                * scenario_multiplier
-                * hero_class_multiplier
-                * skill_type_multiplier
-                * skill_multiplier
-                * output_multiplier
-                * damage_taken_multiplier
-                * final_damage_multiplier
-            )
-            damage = max(int(battle["minimumDamage"]), _round_half_up(damage_before_round))
-            target["currentHp"] = max(0, int(target["currentHp"]) - damage)
-            target["isAlive"] = target["currentHp"] > 0
-            target_max_hp = _get_effective_max_hp(target)
-            damage_tags = f'{"爆头" if is_headshot else ""}{"暴击" if is_critical else ""}'
-
-            _create_event(
-                events,
-                {
-                    "type": "damage_applied",
-                    "round": round_index,
-                    "actorId": actor["id"],
-                    "targetId": target["id"],
-                    "summary": f'{actor["name"]} 对 {target["name"]} 造成 {damage} 点{damage_tags}伤害，目标剩余 {target["currentHp"]}/{target_max_hp} HP{"（不破防）" if is_minimum_damage_by_defense else ""}',
-                    "payload": {
-                        "damage": damage,
-                        "baseDamage": base_damage,
-                        "targetHp": target["currentHp"],
-                        "targetMaxHp": target_max_hp,
-                        "isCritical": is_critical,
-                        "criticalMultiplier": _round_to_two_decimals(critical_multiplier * 100),
-                        "isHeadshot": is_headshot,
-                        "headshotMultiplier": _round_to_two_decimals(headshot_multiplier * 100),
-                        "armorValue": float(target["stats"][UNIT_STAT_ROLE_KEYS["armor"]]),
-                        "armorPenetration": float(actor["stats"][UNIT_STAT_ROLE_KEYS["armorPenetration"]]),
-                        "armorReductionRate": _round_to_two_decimals(armor_reduction_rate * 100),
-                        "armorMultiplier": _round_to_two_decimals(armor_multiplier * 100),
-                        "elementRelation": element_relation,
-                        "elementMultiplier": _round_to_two_decimals(element_multiplier * 100),
-                        "scenarioMultiplier": _round_to_two_decimals(scenario_multiplier * 100),
-                        "heroClassMultiplier": _round_to_two_decimals(hero_class_multiplier * 100),
-                        "skillTypeMultiplier": _round_to_two_decimals(skill_type_multiplier * 100),
-                        "skillMultiplier": _round_to_two_decimals(skill_multiplier * 100),
-                        "outputMultiplier": _round_to_two_decimals(output_multiplier * 100),
-                        "damageTakenMultiplier": _round_to_two_decimals(damage_taken_multiplier * 100),
-                        "finalDamageMultiplier": _round_to_two_decimals(final_damage_multiplier * 100),
-                        "isMinimumDamageByDefense": is_minimum_damage_by_defense,
-                        "effectiveAttack": effective_attack,
-                        "effectiveDefense": effective_defense,
-                    },
-                },
-            )
-
-            if not target["isAlive"]:
-                _create_event(
-                    events,
-                    {
-                        "type": "unit_defeated",
-                        "round": round_index,
-                        "actorId": actor["id"],
-                        "targetId": target["id"],
-                        "summary": f'{target["name"]} 被击败',
-                    },
-                )
-
-            remaining_enemies = _get_alive_units_by_team(
-                units,
-                _get_opponent_team_id(cast(TeamId, actor["teamId"])),
-            )
-            if not remaining_enemies:
-                break
+        _resolve_round_by_mode(action_resolution_mode, payload, units, events, round_index, random)
 
     alive_a = _get_alive_units_by_team(units, "A")
     alive_b = _get_alive_units_by_team(units, "B")
@@ -446,6 +618,7 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
             if winner_team_id is None
             else f'战斗结束，{battle["teamNames"][winner_team_id]}胜利！',
             "payload": {
+                "actionResolutionMode": action_resolution_mode,
                 "winnerTeamId": winner_team_id,
                 "aliveA": len(alive_a),
                 "aliveB": len(alive_b),
@@ -518,12 +691,10 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
 
         winner_team_id = result["winnerTeamId"]
         if winner_team_id in {"A", "B"}:
-            wins[cast(TeamId, winner_team_id)] += 1
+            wins[winner_team_id] += 1
             winner_units = [unit for unit in result["finalUnits"] if unit["teamId"] == winner_team_id]
-            remaining_hp_totals[cast(TeamId, winner_team_id)] += sum(int(unit["currentHp"]) for unit in winner_units)
-            max_hp_totals_on_wins[cast(TeamId, winner_team_id)] += sum(
-                _get_effective_max_hp(cast(RuntimeUnit, unit)) for unit in winner_units
-            )
+            remaining_hp_totals[winner_team_id] += sum(int(unit["currentHp"]) for unit in winner_units)
+            max_hp_totals_on_wins[winner_team_id] += sum(_get_effective_max_hp(unit) for unit in winner_units)
         else:
             draws += 1
 
@@ -550,6 +721,6 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
         },
         "drawRate": _round_to_four_decimals(draws / normalized_count),
         "averageRounds": _round_to_four_decimals(total_rounds / normalized_count),
-        "minRounds": 0 if min_rounds == float("inf") else int(min_rounds),
-        "maxRounds": 0 if max_rounds == float("-inf") else int(max_rounds),
+        "minRounds": int(min_rounds) if min_rounds != float("inf") else 0,
+        "maxRounds": int(max_rounds) if max_rounds != float("-inf") else 0,
     }

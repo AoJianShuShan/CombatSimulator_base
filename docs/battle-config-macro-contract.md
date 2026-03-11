@@ -20,6 +20,7 @@
 
 - 枚举或文本类型字段，例如：
   - `targetingStrategy`
+  - `actionResolutionMode`
   - `teamNames`
 - 单位侧属性，这些仍归 `src/config/attribute-macros.json`
 

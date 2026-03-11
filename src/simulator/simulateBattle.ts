@@ -1,4 +1,5 @@
 import type {
+  ActionResolutionMode,
   AttackElement,
   BattleEvent,
   BattleInput,
@@ -20,6 +21,47 @@ interface SeededRandom {
   next(): number;
   seed: number;
 }
+
+interface AttackResolutionBase {
+  actorId: string;
+  actorName: string;
+  targetId: string;
+  targetMaxHp: number;
+  targetName: string;
+}
+
+interface AttackMissResolution extends AttackResolutionBase {
+  effectiveHitChance: number;
+  type: "miss";
+}
+
+interface AttackDamageResolution extends AttackResolutionBase {
+  armorPenetration: number;
+  armorMultiplier: number;
+  armorReductionRate: number;
+  armorValue: number;
+  baseDamage: number;
+  criticalMultiplier: number;
+  damage: number;
+  damageTakenMultiplier: number;
+  effectiveAttack: number;
+  effectiveDefense: number;
+  elementMultiplier: number;
+  elementRelation: "advantage" | "disadvantage" | "neutral";
+  finalDamageMultiplier: number;
+  headshotMultiplier: number;
+  heroClassMultiplier: number;
+  isCritical: boolean;
+  isHeadshot: boolean;
+  isMinimumDamageByDefense: boolean;
+  outputMultiplier: number;
+  scenarioMultiplier: number;
+  skillMultiplier: number;
+  skillTypeMultiplier: number;
+  type: "damage";
+}
+
+type AttackResolution = AttackMissResolution | AttackDamageResolution;
 
 const unitPositionPriority: Record<UnitPosition, number> = {
   front: 0,
@@ -147,6 +189,15 @@ function cloneUnit(unit: UnitConfig, initialOrder: number): RuntimeUnit {
   };
 }
 
+function cloneRuntimeUnit(unit: RuntimeUnit): RuntimeUnit {
+  return {
+    ...unit,
+    stats: {
+      ...unit.stats,
+    },
+  };
+}
+
 function getAliveUnitsByTeam(units: RuntimeUnit[], teamId: TeamId) {
   return units.filter((unit) => unit.teamId === teamId && unit.isAlive);
 }
@@ -181,6 +232,10 @@ function sortTurnOrder(units: RuntimeUnit[]) {
 
       return left.initialOrder - right.initialOrder;
     });
+}
+
+function getSimultaneousActionOrder(units: RuntimeUnit[]) {
+  return [...units].filter((unit) => unit.isAlive).sort((left, right) => left.initialOrder - right.initialOrder);
 }
 
 function pickTarget(units: RuntimeUnit[], actor: RuntimeUnit, targetingStrategy: TargetingStrategy) {
@@ -224,6 +279,291 @@ function createEvent(
   });
 }
 
+function resolveAttack(
+  input: BattleInput,
+  random: SeededRandom,
+  actor: RuntimeUnit,
+  target: RuntimeUnit,
+): AttackResolution {
+  const effectiveHitChance = clampPercentage(
+    actor.stats[unitStatRoleKeys.hitChance] - target.stats[unitStatRoleKeys.dodgeChance],
+  );
+  const hitRoll = random.next();
+  if (hitRoll >= effectiveHitChance / 100) {
+    return {
+      actorId: actor.id,
+      actorName: actor.name,
+      effectiveHitChance,
+      targetId: target.id,
+      targetMaxHp: getEffectiveMaxHp(target.stats),
+      targetName: target.name,
+      type: "miss",
+    };
+  }
+
+  const effectiveAttack = getEffectiveAttack(actor.stats);
+  const effectiveDefense = getEffectiveDefense(target.stats);
+  const isMinimumDamageByDefense = effectiveAttack - effectiveDefense < input.battle.minimumDamage;
+  const baseDamage = Math.max(input.battle.minimumDamage, effectiveAttack - effectiveDefense);
+  const armorReductionRate = getArmorReductionRate(input, actor, target);
+  const armorMultiplier = 1 - armorReductionRate;
+  const critRoll = random.next();
+  const isCritical = critRoll < clampPercentage(actor.stats[unitStatRoleKeys.critChance]) / 100;
+  const criticalMultiplier = isCritical ? actor.stats[unitStatRoleKeys.critMultiplier] / 100 : 1;
+  const headshotRoll = random.next();
+  const isHeadshot = headshotRoll < clampPercentage(actor.stats[unitStatRoleKeys.headshotChance]) / 100;
+  const headshotMultiplier = isHeadshot ? actor.stats[unitStatRoleKeys.headshotMultiplier] / 100 : 1;
+  const { relation: elementRelation, multiplier: elementMultiplier } = getElementRelation(input, actor, target);
+  const scenarioMultiplier = 1 + actor.stats[unitStatRoleKeys.scenarioDamageBonus] / 100;
+  const heroClassMultiplier = 1 + actor.stats[unitStatRoleKeys.heroClassDamageBonus] / 100;
+  const skillTypeMultiplier = 1 + actor.stats[unitStatRoleKeys.skillTypeDamageBonus] / 100;
+  const skillMultiplier = actor.stats[unitStatRoleKeys.skillMultiplier] / 100;
+  const outputMultiplier = clampMultiplier(
+    1 + (actor.stats[unitStatRoleKeys.outputAmplify] - actor.stats[unitStatRoleKeys.outputDecay]) / 100,
+  );
+  const damageTakenMultiplier = clampMultiplier(
+    1 + (target.stats[unitStatRoleKeys.damageTakenAmplify] - target.stats[unitStatRoleKeys.damageTakenReduction]) / 100,
+  );
+  const finalDamageMultiplier = clampMultiplier(
+    1 + (actor.stats[unitStatRoleKeys.finalDamageBonus] - target.stats[unitStatRoleKeys.finalDamageReduction]) / 100,
+  );
+  const damageBeforeRound =
+    baseDamage *
+    armorMultiplier *
+    criticalMultiplier *
+    headshotMultiplier *
+    elementMultiplier *
+    scenarioMultiplier *
+    heroClassMultiplier *
+    skillTypeMultiplier *
+    skillMultiplier *
+    outputMultiplier *
+    damageTakenMultiplier *
+    finalDamageMultiplier;
+  const damage = Math.max(input.battle.minimumDamage, roundHalfUp(damageBeforeRound));
+
+  return {
+    actorId: actor.id,
+    actorName: actor.name,
+    armorMultiplier,
+    armorReductionRate,
+    armorPenetration: actor.stats[unitStatRoleKeys.armorPenetration],
+    armorValue: target.stats[unitStatRoleKeys.armor],
+    baseDamage,
+    criticalMultiplier,
+    damage,
+    damageTakenMultiplier,
+    effectiveAttack,
+    effectiveDefense,
+    elementMultiplier,
+    elementRelation,
+    finalDamageMultiplier,
+    headshotMultiplier,
+    heroClassMultiplier,
+    isCritical,
+    isHeadshot,
+    isMinimumDamageByDefense,
+    outputMultiplier,
+    scenarioMultiplier,
+    skillMultiplier,
+    skillTypeMultiplier,
+    targetId: target.id,
+    targetMaxHp: getEffectiveMaxHp(target.stats),
+    targetName: target.name,
+    type: "damage",
+  };
+}
+
+function createAttackMissEvent(events: BattleEvent[], round: number, resolution: AttackMissResolution) {
+  createEvent(events, {
+    type: "attack_missed",
+    round,
+    actorId: resolution.actorId,
+    targetId: resolution.targetId,
+    summary: `${resolution.actorName} 攻击 ${resolution.targetName}，但被闪避或未命中`,
+    payload: {
+      hitChance: resolution.effectiveHitChance,
+    },
+  });
+}
+
+function createDamageAppliedEvent(
+  events: BattleEvent[],
+  round: number,
+  resolution: AttackDamageResolution,
+  targetCurrentHp: number,
+) {
+  const damageTags = `${resolution.isHeadshot ? "爆头" : ""}${resolution.isCritical ? "暴击" : ""}`;
+
+  createEvent(events, {
+    type: "damage_applied",
+    round,
+    actorId: resolution.actorId,
+    targetId: resolution.targetId,
+    summary: `${resolution.actorName} 对 ${resolution.targetName} 造成 ${resolution.damage} 点${damageTags}伤害，目标剩余 ${targetCurrentHp}/${resolution.targetMaxHp} HP${resolution.isMinimumDamageByDefense ? "（不破防）" : ""}`,
+    payload: {
+      damage: resolution.damage,
+      baseDamage: resolution.baseDamage,
+      targetHp: targetCurrentHp,
+      targetMaxHp: resolution.targetMaxHp,
+      isCritical: resolution.isCritical,
+      criticalMultiplier: roundToTwoDecimals(resolution.criticalMultiplier * 100),
+      isHeadshot: resolution.isHeadshot,
+      headshotMultiplier: roundToTwoDecimals(resolution.headshotMultiplier * 100),
+      armorValue: resolution.armorValue,
+      armorPenetration: resolution.armorPenetration,
+      armorReductionRate: roundToTwoDecimals(resolution.armorReductionRate * 100),
+      armorMultiplier: roundToTwoDecimals(resolution.armorMultiplier * 100),
+      elementRelation: resolution.elementRelation,
+      elementMultiplier: roundToTwoDecimals(resolution.elementMultiplier * 100),
+      scenarioMultiplier: roundToTwoDecimals(resolution.scenarioMultiplier * 100),
+      heroClassMultiplier: roundToTwoDecimals(resolution.heroClassMultiplier * 100),
+      skillTypeMultiplier: roundToTwoDecimals(resolution.skillTypeMultiplier * 100),
+      skillMultiplier: roundToTwoDecimals(resolution.skillMultiplier * 100),
+      outputMultiplier: roundToTwoDecimals(resolution.outputMultiplier * 100),
+      damageTakenMultiplier: roundToTwoDecimals(resolution.damageTakenMultiplier * 100),
+      finalDamageMultiplier: roundToTwoDecimals(resolution.finalDamageMultiplier * 100),
+      isMinimumDamageByDefense: resolution.isMinimumDamageByDefense,
+      effectiveAttack: resolution.effectiveAttack,
+      effectiveDefense: resolution.effectiveDefense,
+    },
+  });
+}
+
+function createUnitDefeatedEvent(events: BattleEvent[], round: number, target: RuntimeUnit, actorId?: string) {
+  createEvent(events, {
+    type: "unit_defeated",
+    round,
+    actorId,
+    targetId: target.id,
+    summary: `${target.name} 被击败`,
+  });
+}
+
+function runSequentialRound(
+  input: BattleInput,
+  units: RuntimeUnit[],
+  events: BattleEvent[],
+  round: number,
+  random: SeededRandom,
+) {
+  const turnOrder = sortTurnOrder(units);
+  for (const actor of turnOrder) {
+    if (!actor.isAlive) {
+      continue;
+    }
+
+    const target = pickTarget(units, actor, input.battle.targetingStrategy);
+    if (!target) {
+      break;
+    }
+
+    createEvent(events, {
+      type: "turn_started",
+      round,
+      actorId: actor.id,
+      targetId: target.id,
+      summary: `${actor.name} 对 ${target.name} 发起攻击`,
+    });
+
+    const resolution = resolveAttack(input, random, actor, target);
+    if (resolution.type === "miss") {
+      createAttackMissEvent(events, round, resolution);
+      continue;
+    }
+
+    target.currentHp = Math.max(0, target.currentHp - resolution.damage);
+    target.isAlive = target.currentHp > 0;
+    createDamageAppliedEvent(events, round, resolution, target.currentHp);
+
+    if (!target.isAlive) {
+      createUnitDefeatedEvent(events, round, target, resolution.actorId);
+    }
+
+    const remainingEnemies = getAliveUnitsByTeam(units, getOpponentTeamId(actor.teamId));
+    if (remainingEnemies.length === 0) {
+      break;
+    }
+  }
+}
+
+function runSimultaneousRound(
+  input: BattleInput,
+  units: RuntimeUnit[],
+  events: BattleEvent[],
+  round: number,
+  random: SeededRandom,
+) {
+  const snapshotUnits = units.map(cloneRuntimeUnit);
+  const actionOrder = getSimultaneousActionOrder(snapshotUnits);
+  const resolutions: AttackResolution[] = [];
+
+  for (const actor of actionOrder) {
+    const target = pickTarget(snapshotUnits, actor, input.battle.targetingStrategy);
+    if (!target) {
+      continue;
+    }
+
+    createEvent(events, {
+      type: "turn_started",
+      round,
+      actorId: actor.id,
+      targetId: target.id,
+      summary: `${actor.name} 对 ${target.name} 发起攻击`,
+    });
+    resolutions.push(resolveAttack(input, random, actor, target));
+  }
+
+  const defeatedIds = new Set<string>();
+  const defeatedOrder: string[] = [];
+
+  for (const resolution of resolutions) {
+    if (resolution.type === "miss") {
+      createAttackMissEvent(events, round, resolution);
+      continue;
+    }
+
+    const target = units.find((unit) => unit.id === resolution.targetId);
+    if (!target) {
+      continue;
+    }
+
+    target.currentHp = Math.max(0, target.currentHp - resolution.damage);
+    target.isAlive = target.currentHp > 0;
+    createDamageAppliedEvent(events, round, resolution, target.currentHp);
+
+    if (!target.isAlive && !defeatedIds.has(target.id)) {
+      defeatedIds.add(target.id);
+      defeatedOrder.push(target.id);
+    }
+  }
+
+  for (const targetId of defeatedOrder) {
+    const target = units.find((unit) => unit.id === targetId);
+    if (!target) {
+      continue;
+    }
+
+    createUnitDefeatedEvent(events, round, target);
+  }
+}
+
+function resolveRoundByMode(
+  actionResolutionMode: ActionResolutionMode,
+  input: BattleInput,
+  units: RuntimeUnit[],
+  events: BattleEvent[],
+  round: number,
+  random: SeededRandom,
+) {
+  if (actionResolutionMode === "arpgSimultaneous") {
+    runSimultaneousRound(input, units, events, round, random);
+    return;
+  }
+
+  runSequentialRound(input, units, events, round, random);
+}
+
 export function simulateBattle(input: BattleInput): BattleSimulationResult {
   const units = input.units.map((unit, index) => cloneUnit(unit, index));
   const events: BattleEvent[] = [];
@@ -235,6 +575,7 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
     round: 0,
     summary: `${input.battle.teamNames.A} 与 ${input.battle.teamNames.B} 的战斗开始`,
     payload: {
+      actionResolutionMode: input.battle.actionResolutionMode,
       maxRounds: input.battle.maxRounds,
       unitCount: units.length,
     },
@@ -253,142 +594,13 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
       round,
       summary: `第 ${round} 回合开始`,
       payload: {
+        actionResolutionMode: input.battle.actionResolutionMode,
         aliveA: teamAAlive.length,
         aliveB: teamBAlive.length,
       },
     });
 
-    const turnOrder = sortTurnOrder(units);
-    for (const actor of turnOrder) {
-      if (!actor.isAlive) {
-        continue;
-      }
-
-      const target = pickTarget(units, actor, input.battle.targetingStrategy);
-      if (!target) {
-        break;
-      }
-
-      createEvent(events, {
-        type: "turn_started",
-        round,
-        actorId: actor.id,
-        targetId: target.id,
-        summary: `${actor.name} 对 ${target.name} 发起攻击`,
-      });
-
-      const effectiveHitChance = clampPercentage(
-        actor.stats[unitStatRoleKeys.hitChance] - target.stats[unitStatRoleKeys.dodgeChance],
-      );
-      const hitRoll = random.next();
-      if (hitRoll >= effectiveHitChance / 100) {
-        createEvent(events, {
-          type: "attack_missed",
-          round,
-          actorId: actor.id,
-          targetId: target.id,
-          summary: `${actor.name} 攻击 ${target.name}，但被闪避或未命中`,
-          payload: {
-            hitChance: effectiveHitChance,
-          },
-        });
-        continue;
-      }
-
-      const effectiveAttack = getEffectiveAttack(actor.stats);
-      const effectiveDefense = getEffectiveDefense(target.stats);
-      const isMinimumDamageByDefense = effectiveAttack - effectiveDefense < input.battle.minimumDamage;
-      const baseDamage = Math.max(input.battle.minimumDamage, effectiveAttack - effectiveDefense);
-      const armorReductionRate = getArmorReductionRate(input, actor, target);
-      const armorMultiplier = 1 - armorReductionRate;
-      const critRoll = random.next();
-      const isCritical = critRoll < clampPercentage(actor.stats[unitStatRoleKeys.critChance]) / 100;
-      const criticalMultiplier = isCritical ? actor.stats[unitStatRoleKeys.critMultiplier] / 100 : 1;
-      const headshotRoll = random.next();
-      const isHeadshot = headshotRoll < clampPercentage(actor.stats[unitStatRoleKeys.headshotChance]) / 100;
-      const headshotMultiplier = isHeadshot ? actor.stats[unitStatRoleKeys.headshotMultiplier] / 100 : 1;
-      const { relation: elementRelation, multiplier: elementMultiplier } = getElementRelation(input, actor, target);
-      const scenarioMultiplier = 1 + actor.stats[unitStatRoleKeys.scenarioDamageBonus] / 100;
-      const heroClassMultiplier = 1 + actor.stats[unitStatRoleKeys.heroClassDamageBonus] / 100;
-      const skillTypeMultiplier = 1 + actor.stats[unitStatRoleKeys.skillTypeDamageBonus] / 100;
-      const skillMultiplier = actor.stats[unitStatRoleKeys.skillMultiplier] / 100;
-      const outputMultiplier = clampMultiplier(
-        1 + (actor.stats[unitStatRoleKeys.outputAmplify] - actor.stats[unitStatRoleKeys.outputDecay]) / 100,
-      );
-      const damageTakenMultiplier = clampMultiplier(
-        1 + (target.stats[unitStatRoleKeys.damageTakenAmplify] - target.stats[unitStatRoleKeys.damageTakenReduction]) / 100,
-      );
-      const finalDamageMultiplier = clampMultiplier(
-        1 + (actor.stats[unitStatRoleKeys.finalDamageBonus] - target.stats[unitStatRoleKeys.finalDamageReduction]) / 100,
-      );
-      const damageBeforeRound =
-        baseDamage *
-        armorMultiplier *
-        criticalMultiplier *
-        headshotMultiplier *
-        elementMultiplier *
-        scenarioMultiplier *
-        heroClassMultiplier *
-        skillTypeMultiplier *
-        skillMultiplier *
-        outputMultiplier *
-        damageTakenMultiplier *
-        finalDamageMultiplier;
-      const damage = Math.max(input.battle.minimumDamage, roundHalfUp(damageBeforeRound));
-      target.currentHp = Math.max(0, target.currentHp - damage);
-      target.isAlive = target.currentHp > 0;
-      const targetMaxHp = getEffectiveMaxHp(target.stats);
-      const damageTags = `${isHeadshot ? "爆头" : ""}${isCritical ? "暴击" : ""}`;
-
-      createEvent(events, {
-        type: "damage_applied",
-        round,
-        actorId: actor.id,
-        targetId: target.id,
-        summary: `${actor.name} 对 ${target.name} 造成 ${damage} 点${damageTags}伤害，目标剩余 ${target.currentHp}/${targetMaxHp} HP${isMinimumDamageByDefense ? "（不破防）" : ""}`,
-        payload: {
-          damage,
-          baseDamage,
-          targetHp: target.currentHp,
-          targetMaxHp,
-          isCritical,
-          criticalMultiplier: roundToTwoDecimals(criticalMultiplier * 100),
-          isHeadshot,
-          headshotMultiplier: roundToTwoDecimals(headshotMultiplier * 100),
-          armorValue: target.stats[unitStatRoleKeys.armor],
-          armorPenetration: actor.stats[unitStatRoleKeys.armorPenetration],
-          armorReductionRate: roundToTwoDecimals(armorReductionRate * 100),
-          armorMultiplier: roundToTwoDecimals(armorMultiplier * 100),
-          elementRelation,
-          elementMultiplier: roundToTwoDecimals(elementMultiplier * 100),
-          scenarioMultiplier: roundToTwoDecimals(scenarioMultiplier * 100),
-          heroClassMultiplier: roundToTwoDecimals(heroClassMultiplier * 100),
-          skillTypeMultiplier: roundToTwoDecimals(skillTypeMultiplier * 100),
-          skillMultiplier: roundToTwoDecimals(skillMultiplier * 100),
-          outputMultiplier: roundToTwoDecimals(outputMultiplier * 100),
-          damageTakenMultiplier: roundToTwoDecimals(damageTakenMultiplier * 100),
-          finalDamageMultiplier: roundToTwoDecimals(finalDamageMultiplier * 100),
-          isMinimumDamageByDefense,
-          effectiveAttack,
-          effectiveDefense,
-        },
-      });
-
-      if (!target.isAlive) {
-        createEvent(events, {
-          type: "unit_defeated",
-          round,
-          actorId: actor.id,
-          targetId: target.id,
-          summary: `${target.name} 被击败`,
-        });
-      }
-
-      const remainingEnemies = getAliveUnitsByTeam(units, getOpponentTeamId(actor.teamId));
-      if (remainingEnemies.length === 0) {
-        break;
-      }
-    }
+    resolveRoundByMode(input.battle.actionResolutionMode, input, units, events, round, random);
   }
 
   const aliveA = getAliveUnitsByTeam(units, "A");
@@ -403,6 +615,7 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
         ? "战斗结束，结果为平局"
         : `战斗结束，${input.battle.teamNames[winnerTeamId]}胜利！`,
     payload: {
+      actionResolutionMode: input.battle.actionResolutionMode,
       winnerTeamId,
       aliveA: aliveA.length,
       aliveB: aliveB.length,
