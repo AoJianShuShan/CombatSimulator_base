@@ -124,9 +124,8 @@ def _get_battle_duration_ms(result: dict[str, Any]) -> float:
         return 0.0
 
     last_event = events[-1]
-    payload = last_event.get("payload") if isinstance(last_event, dict) else None
-    timeline_ms = payload.get("timelineMs") if isinstance(payload, dict) else None
-    return float(timeline_ms) if isinstance(timeline_ms, (int, float)) else 0.0
+    elapsed_time_ms = last_event.get("elapsedTimeMs") if isinstance(last_event, dict) else None
+    return float(elapsed_time_ms) if isinstance(elapsed_time_ms, (int, float)) else 0.0
 
 
 def _get_effective_attack(unit_or_stats: RuntimeUnit | dict[str, Any]) -> int:
@@ -279,7 +278,19 @@ def _pick_target(
 
 
 def _create_event(events: list[dict[str, Any]], event: dict[str, Any]) -> None:
-    events.append({"sequence": len(events) + 1, "timeIndex": len(events), **event})
+    payload = event.get("payload")
+    elapsed_time_ms = event.get("elapsedTimeMs")
+    if not isinstance(elapsed_time_ms, (int, float)) and isinstance(payload, dict):
+        timeline_ms = payload.get("timelineMs")
+        if isinstance(timeline_ms, (int, float)):
+            elapsed_time_ms = timeline_ms
+
+    normalized_event = {"sequence": len(events) + 1, "timeIndex": len(events), **event, "elapsedTimeMs": elapsed_time_ms or 0}
+    if normalized_event.get("actorId") is None:
+        normalized_event.pop("actorId", None)
+    if normalized_event.get("targetId") is None:
+        normalized_event.pop("targetId", None)
+    events.append(normalized_event)
 
 
 def _resolve_attack(
@@ -556,6 +567,7 @@ def _create_unit_defeated_event(
             "summary": f'{target["name"]} 被击败',
             "payload": {
                 "timelineMs": timeline_ms,
+                "targetHp": int(target["currentHp"]),
             },
         },
     )
@@ -792,13 +804,13 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
         last_timeline_ms = timeline_ms
         _create_event(
             events,
-            {
-                "type": "round_started",
-                "round": rounds_completed,
-                "summary": f"第 {rounds_completed} 轮开始",
-                "payload": {
-                    "actionResolutionMode": action_resolution_mode,
-                    "aliveA": len(team_a_alive),
+                {
+                    "type": "round_started",
+                    "round": rounds_completed,
+                    "summary": f"第 {rounds_completed} 轮开始",
+                    "payload": {
+                        "actionResolutionMode": action_resolution_mode,
+                        "aliveA": len(team_a_alive),
                     "aliveB": len(team_b_alive),
                     "timelineMs": timeline_ms,
                 },

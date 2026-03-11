@@ -12,6 +12,7 @@ interface BattleConfigNumberMacroDefinition {
   key: BattleNumberFieldKey;
   label: string;
   default: number;
+  defaultFactory?: "currentTimeUint32";
   min: number;
   max?: number;
   step: number;
@@ -70,6 +71,20 @@ export const battleNumberDefaults = Object.freeze(
     number
   >,
 );
+
+export function createCurrentTimeUint32() {
+  const seed = Math.trunc(Date.now()) >>> 0;
+  return seed === 0 ? 1 : seed;
+}
+
+export function createBattleNumberDefaults() {
+  return Object.fromEntries(
+    battleConfigNumberMacros.map((macro) => [
+      macro.key,
+      macro.defaultFactory === "currentTimeUint32" ? createCurrentTimeUint32() : macro.default,
+    ]),
+  ) as Record<BattleNumberFieldKey, number>;
+}
 
 export function formatBattleConfigValue(field: BattleNumberFieldKey, value: number) {
   const macro = battleConfigNumberMacroMap[field];

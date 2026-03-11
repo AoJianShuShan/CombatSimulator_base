@@ -311,11 +311,20 @@ function pickTarget(units: RuntimeUnit[], actor: RuntimeUnit, targetingStrategy:
   }
 }
 
-function createEvent(events: BattleEvent[], event: Omit<BattleEvent, "sequence">) {
+function createEvent(events: BattleEvent[], event: Omit<BattleEvent, "sequence" | "timeIndex" | "elapsedTimeMs"> & {
+  elapsedTimeMs?: number;
+}) {
+  const elapsedTimeMs =
+    typeof event.elapsedTimeMs === "number"
+      ? event.elapsedTimeMs
+      : typeof event.payload?.timelineMs === "number"
+        ? event.payload.timelineMs
+        : 0;
   events.push({
     sequence: events.length + 1,
     timeIndex: events.length,
     ...event,
+    elapsedTimeMs,
   });
 }
 
@@ -523,7 +532,7 @@ function createReloadCompletedEvent(events: BattleEvent[], round: number, timeli
     type: "reload_completed",
     round,
     actorId: actor.id,
-    summary: `${actor.name} 完成换弹`,
+    summary: `${actor.name} 完成换弹，弹匣恢复至 ${actor.currentAmmo} 发`,
     payload: {
       timelineMs,
       fireRate: roundToTwoDecimals(Math.max(1, actor.stats[unitStatRoleKeys.fireRate])),
@@ -788,7 +797,7 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
     createEvent(events, {
       type: "round_started",
       round: roundsCompleted,
-      summary: `第 ${roundsCompleted} 回合开始`,
+      summary: `第 ${roundsCompleted} 轮开始`,
       payload: {
         actionResolutionMode: input.battle.actionResolutionMode,
         aliveA: teamAAlive.length,

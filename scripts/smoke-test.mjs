@@ -450,6 +450,14 @@ if (JSON.stringify(result) !== JSON.stringify(replayResult)) {
   throw new Error("相同随机种子未得到完全一致的战斗结果");
 }
 
+if (
+  result.events.some(
+    (event, index) => event.timeIndex !== index || typeof event.elapsedTimeMs !== "number" || !Number.isFinite(event.elapsedTimeMs),
+  )
+) {
+  throw new Error("事件固定时间字段或事件索引异常");
+}
+
 if (singleBatchResult.totalBattles !== 1) {
   throw new Error("批量摘要基础结构异常");
 }
@@ -459,9 +467,9 @@ if (
   singleBatchResult.averageRounds !== result.roundsCompleted ||
   singleBatchResult.minRounds !== result.roundsCompleted ||
   singleBatchResult.maxRounds !== result.roundsCompleted ||
-  singleBatchResult.averageDurationMs !== (result.events.at(-1)?.payload?.timelineMs ?? 0) ||
-  singleBatchResult.minDurationMs !== (result.events.at(-1)?.payload?.timelineMs ?? 0) ||
-  singleBatchResult.maxDurationMs !== (result.events.at(-1)?.payload?.timelineMs ?? 0)
+  singleBatchResult.averageDurationMs !== (result.events.at(-1)?.elapsedTimeMs ?? 0) ||
+  singleBatchResult.minDurationMs !== (result.events.at(-1)?.elapsedTimeMs ?? 0) ||
+  singleBatchResult.maxDurationMs !== (result.events.at(-1)?.elapsedTimeMs ?? 0)
 ) {
   throw new Error("count = 1 的批量摘要与单场结果统计不一致");
 }
@@ -517,7 +525,7 @@ if (
 
 const fireRateTurnSequence = fireRateResult.events
   .filter((event) => event.type === "turn_started")
-  .map((event) => `${event.actorId}@${event.payload?.timelineMs ?? "?"}`)
+  .map((event) => `${event.actorId}@${event.elapsedTimeMs ?? "?"}`)
   .join("|");
 const firstFireRateTurnEvent = fireRateResult.events.find((event) => event.type === "turn_started" && event.actorId === "A-1");
 if (fireRateTurnSequence !== "A-1@0|B-1@0|A-1@500") {
@@ -531,10 +539,10 @@ const reloadStartedEvent = reloadResult.events.find((event) => event.type === "r
 const reloadCompletedEvent = reloadResult.events.find((event) => event.type === "reload_completed" && event.actorId === "A-1");
 const reloadTurnTimes = reloadResult.events
   .filter((event) => event.type === "turn_started" && event.actorId === "A-1")
-  .map((event) => event.payload?.timelineMs ?? null);
+  .map((event) => event.elapsedTimeMs ?? null);
 if (
   reloadStartedEvent?.payload?.reloadUntilMs !== 800 ||
-  reloadCompletedEvent?.payload?.timelineMs !== 800 ||
+  reloadCompletedEvent?.elapsedTimeMs !== 800 ||
   JSON.stringify(reloadTurnTimes) !== JSON.stringify([0, 800])
 ) {
   throw new Error("弹匣与换弹时间未正确驱动下一次行动");
@@ -542,18 +550,18 @@ if (
 
 const turnBasedTimelineSequence = turnBasedTimelineResult.events
   .filter((event) => event.type === "turn_started")
-  .map((event) => `${event.actorId}@${event.payload?.timelineMs ?? "?"}`)
+  .map((event) => `${event.actorId}@${event.elapsedTimeMs ?? "?"}`)
   .join("|");
 if (turnBasedTimelineSequence !== "B-1@0|A-1@0|A-1@500") {
   throw new Error(`回合制速度模式未正确处理同一时刻先后手与射速频率: ${turnBasedTimelineSequence}`);
 }
 
 const maxBattleTimeEventTimes = maxBattleTimeResult.events
-  .map((event) => (typeof event.payload?.timelineMs === "number" ? event.payload.timelineMs : 0));
+  .map((event) => event.elapsedTimeMs ?? 0);
 if (
   maxBattleTimeResult.roundsCompleted !== 1 ||
   maxBattleTimeResult.events.some((event) => event.type === "reload_completed") ||
-  maxBattleTimeResult.events.some((event) => event.type === "turn_started" && event.payload?.timelineMs === 800) ||
+  maxBattleTimeResult.events.some((event) => event.type === "turn_started" && event.elapsedTimeMs === 800) ||
   maxBattleTimeResult.events.at(-1)?.payload?.endReason !== "maxBattleTimeMs" ||
   Math.max(...maxBattleTimeEventTimes) > 700
 ) {
@@ -568,6 +576,7 @@ console.log(
       roundsCompleted: result.roundsCompleted,
       eventCount: result.events.length,
       finalTimeIndex: result.events.at(-1)?.timeIndex ?? null,
+      finalElapsedTimeMs: result.events.at(-1)?.elapsedTimeMs ?? null,
       survivingUnits: result.finalUnits.filter((unit) => unit.isAlive).map((unit) => unit.name),
       simultaneousDrawWinner: simultaneousDrawResult.winnerTeamId,
       turnBasedWinner: turnBasedResult.winnerTeamId,

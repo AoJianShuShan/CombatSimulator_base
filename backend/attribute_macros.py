@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, NotRequired, TypedDict, cast
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -14,6 +14,7 @@ class AttributeMacroDefinition(TypedDict):
     key: str
     label: str
     default: int | float
+    teamDefaults: NotRequired[dict[str, int | float]]
     min: int | float
     step: int | float
     role: str

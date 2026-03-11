@@ -160,7 +160,8 @@ damage = max(minimumDamage, round(damageBeforeRound))
   - `unit_defeated`
   - `battle_ended`
 - 所有事件都带稳定递增的 `timeIndex`，它表示事件索引，不表示毫秒时间
-- 事件附加载荷里会记录当前时间点 `timelineMs`
+- 所有事件都带固定字段 `elapsedTimeMs`，表示该事件对应的真实战斗时间
+- 事件附加载荷里仍可能带 `timelineMs` 或其他时间相关字段，用于描述事件细节，例如“换弹完成时间”“下一次攻击时间”
 - 伤害事件会记录当前生命、最大生命、暴击、爆头、护甲减伤、元素关系和各乘区信息
 
 ## 一致性要求

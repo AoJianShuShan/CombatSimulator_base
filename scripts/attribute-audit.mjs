@@ -574,6 +574,22 @@ function normalizeForComparison(snapshot) {
   };
 }
 
+function normalizeJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeJsonValue(item));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, normalizeJsonValue(value[key])]),
+    );
+  }
+
+  return value;
+}
+
 async function checkBackendAvailability() {
   try {
     const response = await fetch(`${backendBaseUrl}/health`);
@@ -924,6 +940,35 @@ const backendAvailable = await checkBackendAvailability();
 reportLines.push("=== 属性计算审计 ===");
 reportLines.push(`后端对比: ${backendAvailable ? `已连接 ${backendBaseUrl}` : "未连接，跳过前后端一致性对比"}`);
 reportLines.push("");
+
+if (backendAvailable) {
+  const eventContractInput = createBaseInput({
+    battle: {
+      actionResolutionMode: "arpgSimultaneous",
+      maxRounds: 3,
+      randomSeed: 20260311,
+    },
+    actorStats: {
+      attack: 60,
+      fireRate: 60,
+      magazineCapacity: 1,
+      reloadTimeMs: 800,
+    },
+    targetStats: {
+      defense: 0,
+      maxHp: 40,
+    },
+  });
+  const frontendEvents = simulateBattle(eventContractInput).events;
+  const backendEvents = (await simulateByBackend(eventContractInput)).events;
+  const eventStreamMatched =
+    JSON.stringify(normalizeJsonValue(frontendEvents)) === JSON.stringify(normalizeJsonValue(backendEvents));
+  reportLines.push(`[完整事件流] ${eventStreamMatched ? "前后端一致" : "前后端不一致"}`);
+  reportLines.push("");
+  if (!eventStreamMatched) {
+    issues.push("完整事件流前后端不一致");
+  }
+}
 
 for (const auditCase of auditCases) {
   const beforeInput = auditCase.buildInput(auditCase.before);

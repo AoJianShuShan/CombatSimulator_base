@@ -151,6 +151,53 @@ select:focus-visible {
   padding: 28px 22px 52px;
 }
 
+.page-root {
+  position: relative;
+}
+
+.submission-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(25, 18, 12, 0.28);
+  backdrop-filter: blur(8px);
+}
+
+.submission-dialog {
+  width: min(440px, calc(100vw - 32px));
+  display: grid;
+  gap: 12px;
+  padding: 26px 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 248, 240, 0.94)),
+    var(--panel-strong);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.submission-kicker {
+  color: var(--muted-strong);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.submission-dialog h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.submission-dialog p {
+  margin: 0;
+  color: var(--muted);
+}
+
 .theme-switcher {
   position: fixed;
   top: 18px;

@@ -58,10 +58,13 @@ type UnitStatRole =
   | "damageTakenAmplify"
   | "damageTakenReduction";
 
+type TeamDefaultOverrides = Partial<Record<"A" | "B", number>>;
+
 interface AttributeMacroDefinition {
   key: UnitStatKey;
   label: string;
   default: number;
+  teamDefaults?: TeamDefaultOverrides;
   min: number;
   step: number;
   role: UnitStatRole;
@@ -123,6 +126,12 @@ export const unitStatDefaults = Object.freeze(
   Object.fromEntries(unitAttributeMacros.map((macro) => [macro.key, macro.default])) as Record<UnitStatKey, number>,
 );
 
-export function createDefaultUnitStats() {
-  return { ...unitStatDefaults };
+export function createDefaultUnitStats(teamId?: "A" | "B") {
+  if (!teamId) {
+    return { ...unitStatDefaults };
+  }
+
+  return Object.fromEntries(
+    unitAttributeMacros.map((macro) => [macro.key, macro.teamDefaults?.[teamId] ?? macro.default]),
+  ) as Record<UnitStatKey, number>;
 }

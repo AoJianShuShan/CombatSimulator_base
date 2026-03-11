@@ -4,7 +4,7 @@
 
 - 前端 Web TypeScript：配置阵容、编辑单位、运行模拟、查看结果与事件日志
 - 前端执行视图切换：单场模拟 / 多场统计
-- 前端可用交互：刷新随机种子、逐事件回放、导出配置与结果 JSON
+- 前端可用交互：刷新随机种子、逐事件回放、导入/导出配置、导出结果 JSON、主题切换
 - 前端本地模拟引擎：纯函数执行战斗，不依赖 UI
 - Python 后端：标准库 HTTP API，可在 WSL、Linux 或 Windows 启动
 - 本地构建、冒烟测试、属性审计脚本
@@ -30,6 +30,8 @@
 - 固定 `randomSeed` 后重复运行，得到可复现的事件流
 - 结果页支持逐事件回放、日志模糊筛选、关键伤害高亮，并显示换弹事件
 - 整场战斗已支持 `最大战斗时长(ms)`，可与 `最大回合数` 一起作为终止条件；若因上限结束且双方仍存活，则按平局处理
+- 页面支持 `跟随系统 / 白天 / 夜间` 主题切换
+- 运行模拟时页面会锁定编辑；后端模式支持超时自动停止，本地多场统计支持手动停止
 
 ## 重要约束
 
@@ -46,7 +48,9 @@
 - 需要连后端 API 一起跑：双击项目根目录的 `start-fullstack.bat`
 - 两个脚本都会自动打开浏览器到 `http://127.0.0.1:4173`
 - `start-local.bat` 只需要 Node.js
-- `start-fullstack.bat` 需要 Node.js 和 Python 3
+- `start-fullstack.bat` 需要 Node.js 和 Python 3.12+
+- 推荐使用支持 `showSaveFilePicker` 的 Chromium 浏览器打开页面，例如新版 Edge 或 Chrome；否则“导出配置 / 导出结果到自选目录”不可用
+- 如果默认浏览器不是 Chromium，启动脚本仍会正常打开页面，但导出到自选目录会受浏览器能力限制
 
 ### 前端开发服务器
 
@@ -55,6 +59,12 @@ npm run dev
 ```
 
 默认监听 `http://127.0.0.1:4173`。
+
+推荐环境：
+
+- Node.js `22.13+`
+- 若不希望看到 `stripTypeScriptTypes` 的实验性警告，建议使用 `22.18+` 或更高版本
+- Python `3.12+`
 
 ### 前端构建与冒烟测试
 
@@ -116,9 +126,9 @@ $env:PORT = "8000"
 - `POST /simulate-batch`
 
 `POST /simulate` 请求体对齐 [`src/domain/battle.ts`](./src/domain/battle.ts) 中的 `BattleInput`，响应体对齐 `BattleSimulationResult`。
-其中 `BattleInput.battle.randomSeed` 用于伪随机重播，`BattleSimulationResult.events[*].timeIndex` 表示稳定递增的事件索引，真正的战斗时间看事件 payload 里的 `timelineMs`。
+其中 `BattleInput.battle.randomSeed` 用于伪随机重播，`BattleSimulationResult.events[*].timeIndex` 表示稳定递增的事件索引，`BattleSimulationResult.events[*].elapsedTimeMs` 表示该事件对应的真实战斗时间。
 
-`POST /simulate-batch` 请求体格式为 `{ input: BattleInput, count: number }`，返回 N 场战斗的最终摘要统计，不返回完整事件流。
+`POST /simulate-batch` 请求体格式为 `{ input: BattleInput, count: number }`，其中 `count` 必须是 `1..5000` 的整数；返回 N 场战斗的最终摘要统计，不返回完整事件流。
 
 ## 目录
 

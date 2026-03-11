@@ -14,6 +14,7 @@ class BattleConfigNumberMacroDefinition(TypedDict):
     key: str
     label: str
     default: int | float
+    defaultFactory: NotRequired[str]
     min: int | float
     max: NotRequired[int | float]
     step: int | float

@@ -53,6 +53,10 @@
       "key": "speed",
       "label": "速度",
       "default": 9,
+      "teamDefaults": {
+        "A": 10,
+        "B": 9
+      },
       "min": 0,
       "step": 1,
       "role": "speed"

@@ -44,7 +44,7 @@ import {
   validateUnitStatField,
 } from "../domain/validation.ts";
 import { simulateBattle } from "../simulator/simulateBattle.ts";
-import { simulateBattleBatchSummary } from "../simulator/simulateBattleBatch.ts";
+import { simulateBattleBatchSummaryCancelable } from "../simulator/simulateBattleBatch.ts";
 import { fetchBackendHealth, simulateBattleBatchByApi, simulateBattleByApi } from "./api.ts";
 
 type SimulationMode = "local" | "backend";
@@ -92,6 +92,8 @@ interface AppState {
   batchCount: number;
   backendBaseUrl: string;
   isSubmitting: boolean;
+  submissionCancelable: boolean;
+  submissionLabel: string | null;
   isReplayPlaying: boolean;
   replayEventIndex: number;
   message: string | null;
@@ -105,6 +107,17 @@ interface AppState {
 }
 
 const themeModeStorageKey = "combat-simulator-theme-mode";
+const singleSimulationTimeoutMs = 30000;
+const batchSimulationTimeoutMs = 60000;
+
+type SubmissionCancelReason = "manual" | "timeout";
+
+interface ActiveSubmission {
+  cancelReason: SubmissionCancelReason | null;
+  controller: AbortController | null;
+  id: number;
+  timeoutId: number | null;
+}
 
 function normalizeThemeMode(value: string | null | undefined): ThemeMode {
   if (value === "dark" || value === "light" || value === "system") {
@@ -148,6 +161,8 @@ const state: AppState = {
   batchCount: 100,
   backendBaseUrl: "http://127.0.0.1:8000",
   isSubmitting: false,
+  submissionCancelable: false,
+  submissionLabel: null,
   isReplayPlaying: false,
   replayEventIndex: 0,
   message: null,
@@ -162,6 +177,8 @@ const state: AppState = {
 
 let replayTimerId: number | null = null;
 let draggingUnitId: string | null = null;
+let nextSubmissionId = 0;
+let activeSubmission: ActiveSubmission | null = null;
 
 interface DragDropTarget {
   teamId: TeamId;
@@ -288,6 +305,84 @@ function setMessage(message: string | null, tone: MessageTone = "success") {
 function clearMessage() {
   state.message = null;
   state.messageTone = "success";
+}
+
+function waitForNextPaint() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function clearSubmissionTimeout(submission: ActiveSubmission) {
+  if (submission.timeoutId !== null) {
+    window.clearTimeout(submission.timeoutId);
+    submission.timeoutId = null;
+  }
+}
+
+function cancelSubmission(submission: ActiveSubmission, reason: SubmissionCancelReason) {
+  if (submission.cancelReason !== null) {
+    return;
+  }
+
+  submission.cancelReason = reason;
+  clearSubmissionTimeout(submission);
+  submission.controller?.abort();
+}
+
+function getSubmissionAbortMessage(submission: ActiveSubmission) {
+  return submission.cancelReason === "timeout" ? "本次运行超时，已自动停止" : "已停止本次运行";
+}
+
+function startSubmission(label: string, { cancelable, timeoutMs }: { cancelable: boolean; timeoutMs: number }) {
+  nextSubmissionId += 1;
+  const submission: ActiveSubmission = {
+    cancelReason: null,
+    controller: cancelable ? new AbortController() : null,
+    id: nextSubmissionId,
+    timeoutId: null,
+  };
+
+  if (cancelable && timeoutMs > 0) {
+    submission.timeoutId = window.setTimeout(() => {
+      cancelSubmission(submission, "timeout");
+    }, timeoutMs);
+  }
+
+  activeSubmission = submission;
+  state.isSubmitting = true;
+  state.submissionCancelable = cancelable;
+  state.submissionLabel = label;
+  clearMessage();
+  return submission;
+}
+
+function isActiveSubmission(submission: ActiveSubmission) {
+  return activeSubmission?.id === submission.id;
+}
+
+function finishSubmission(submission: ActiveSubmission) {
+  if (!isActiveSubmission(submission)) {
+    return;
+  }
+
+  clearSubmissionTimeout(submission);
+  activeSubmission = null;
+  state.isSubmitting = false;
+  state.submissionCancelable = false;
+  state.submissionLabel = null;
+}
+
+function stopActiveSubmission() {
+  if (!activeSubmission) {
+    return;
+  }
+
+  cancelSubmission(activeSubmission, "manual");
 }
 
 function persistThemeMode() {
@@ -652,6 +747,8 @@ function resetDraft() {
   state.batchSummary = null;
   clearMessage();
   state.isSubmitting = false;
+  state.submissionCancelable = false;
+  state.submissionLabel = null;
   state.isReplayPlaying = false;
   state.replayEventIndex = 0;
   state.editingUnitId = null;
@@ -686,6 +783,7 @@ function updateBatchCount(rawValue: string) {
   }
 
   state.batchCount = value;
+  state.batchSummary = null;
   clearMessage();
 }
 
@@ -767,8 +865,8 @@ function normalizeImportedBattleInput(payload: BattleInput) {
       },
     },
     units: payload.units.map((unit, index) => {
-      const nextTeamId = unit.teamId === "B" ? "B" : "A";
-      const defaultUnit = createDefaultUnit(nextTeamId, index + 1);
+      const fallbackTeamId = unit.teamId === "A" || unit.teamId === "B" ? unit.teamId : "A";
+      const defaultUnit = createDefaultUnit(fallbackTeamId, index + 1);
       return {
         ...defaultUnit,
         ...unit,
@@ -842,6 +940,8 @@ async function importDraft(file: File) {
   state.batchSummary = null;
   state.replayEventIndex = 0;
   state.isSubmitting = false;
+  state.submissionCancelable = false;
+  state.submissionLabel = null;
   state.isReplayPlaying = false;
   state.editingUnitId = null;
   state.logFilters = {
@@ -864,7 +964,27 @@ async function exportResult() {
   );
 }
 
-async function runSimulation() {
+function getSimulationLabel() {
+  if (state.simulationMode === "backend") {
+    return state.simulationView === "single" ? "正在调用后端单场模拟" : "正在调用后端多场统计";
+  }
+
+  return state.simulationView === "single" ? "正在执行前端本地单场模拟" : "正在执行前端本地多场统计";
+}
+
+function isSimulationCancelable() {
+  return state.simulationMode === "backend" || (state.simulationMode === "local" && state.simulationView === "batch");
+}
+
+function getSimulationTimeoutMs() {
+  if (state.simulationMode !== "backend") {
+    return 0;
+  }
+
+  return state.simulationView === "single" ? singleSimulationTimeoutMs : batchSimulationTimeoutMs;
+}
+
+async function runSimulation(container: HTMLElement) {
   if (state.isSubmitting) {
     return;
   }
@@ -878,37 +998,88 @@ async function runSimulation() {
     return;
   }
 
-  state.isSubmitting = true;
-  clearMessage();
+  stopReplay();
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+
+  const simulationView = state.simulationView;
+  const simulationMode = state.simulationMode;
+  const draft = state.draft;
+  const batchCount = state.batchCount;
+  const backendBaseUrl = state.backendBaseUrl;
+  const submission = startSubmission(getSimulationLabel(), {
+    cancelable: isSimulationCancelable(),
+    timeoutMs: getSimulationTimeoutMs(),
+  });
+  renderApp(container);
+  await waitForNextPaint();
 
   try {
-    stopReplay();
-    if (state.simulationView === "single") {
-      state.result =
-        state.simulationMode === "local"
-          ? simulateBattle(state.draft)
-          : await simulateBattleByApi(state.backendBaseUrl, state.draft);
+    if (simulationView === "single") {
+      const result =
+        simulationMode === "local"
+          ? simulateBattle(draft)
+          : await simulateBattleByApi(backendBaseUrl, draft, { signal: submission.controller?.signal });
+      if (!isActiveSubmission(submission)) {
+        return;
+      }
+
+      state.result = result;
       state.replayEventIndex = 0;
       state.isReplayPlaying = false;
       return;
     }
 
-    state.batchSummary =
-      state.simulationMode === "local"
-        ? simulateBattleBatchSummary(state.draft, state.batchCount)
-        : await simulateBattleBatchByApi(state.backendBaseUrl, {
-            count: state.batchCount,
-            input: state.draft,
-          });
+    const batchSummary =
+      simulationMode === "local"
+        ? await simulateBattleBatchSummaryCancelable(draft, batchCount, {
+            onProgress: (completed, total) => {
+              if (!isActiveSubmission(submission)) {
+                return;
+              }
+              if (completed !== total && completed % 100 !== 0) {
+                return;
+              }
+
+              state.submissionLabel = `正在执行前端本地多场统计（${completed}/${total}）`;
+              renderApp(container);
+            },
+            signal: submission.controller?.signal,
+          })
+        : await simulateBattleBatchByApi(
+            backendBaseUrl,
+            {
+              count: batchCount,
+              input: draft,
+            },
+            { signal: submission.controller?.signal },
+          );
+    if (!isActiveSubmission(submission)) {
+      return;
+    }
+
+    state.batchSummary = batchSummary;
   } catch (error) {
-    if (state.simulationView === "single") {
+    if (!isActiveSubmission(submission)) {
+      return;
+    }
+
+    if (simulationView === "single") {
       state.result = null;
     } else {
       state.batchSummary = null;
     }
+
+    if (isAbortError(error)) {
+      setMessage(getSubmissionAbortMessage(submission), "error");
+      return;
+    }
+
     setMessage(error instanceof Error ? error.message : "模拟请求失败", "error");
   } finally {
-    state.isSubmitting = false;
+    finishSubmission(submission);
+    renderApp(container);
   }
 }
 
@@ -973,12 +1144,16 @@ function toggleReplay(container: HTMLElement) {
 
 async function checkBackendHealth() {
   clearMessage();
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 5000);
 
   try {
-    const health = await fetchBackendHealth(state.backendBaseUrl);
+    const health = await fetchBackendHealth(state.backendBaseUrl, { signal: controller.signal });
     setMessage(`后端连接正常：${health.service} / ${health.status}`, "success");
   } catch (error) {
-    setMessage(error instanceof Error ? error.message : "后端连接失败", "error");
+    setMessage(isAbortError(error) ? "后端连接检查超时，请确认服务是否正常" : error instanceof Error ? error.message : "后端连接失败", "error");
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }
 
@@ -988,6 +1163,23 @@ function renderMessage() {
   }
 
   return `<p class="message message-${state.messageTone}">${escapeHtml(state.message)}</p>`;
+}
+
+function renderSubmissionOverlay() {
+  if (!state.isSubmitting) {
+    return "";
+  }
+
+  return `
+    <div class="submission-overlay" role="status" aria-live="polite">
+      <div class="submission-dialog">
+        <div class="submission-kicker">运行中</div>
+        <h2>${escapeHtml(state.submissionLabel ?? "正在处理请求")}</h2>
+        <p>运行期间页面已锁定，避免旧结果覆盖当前配置。</p>
+        ${state.submissionCancelable ? `<button class="button button-danger" data-action="cancel-simulation">停止运行</button>` : ""}
+      </div>
+    </div>
+  `;
 }
 
 function formatSummaryRate(value: number) {
@@ -1215,8 +1407,8 @@ function getEventPrimaryTimeValue(event: BattleSimulationResult["events"][number
     return `${event.round}`;
   }
 
-  if (typeof event.payload?.timelineMs === "number") {
-    return formatTimelineMs(event.payload.timelineMs);
+  if (typeof event.elapsedTimeMs === "number") {
+    return formatTimelineMs(event.elapsedTimeMs);
   }
 
   return "-";
@@ -1425,8 +1617,8 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
   const payload = event.payload ?? {};
   const rows: Array<{ label: string; value: string }> = [];
 
-  if (typeof payload.timelineMs === "number") {
-    rows.push({ label: "时间点", value: formatTimelineMs(payload.timelineMs) });
+  if (typeof event.elapsedTimeMs === "number") {
+    rows.push({ label: "当前战斗时间", value: formatTimelineMs(event.elapsedTimeMs) });
   }
 
   switch (event.type) {
@@ -2182,7 +2374,8 @@ function renderMainPage() {
     .join("");
 
   return `
-    <main class="page">
+    <div class="page-root">
+      <main class="page" ${state.isSubmitting ? 'inert aria-hidden="true"' : ""}>
       ${renderThemeSwitcher()}
       <section class="hero">
         <div class="hero-kicker">内部工具 · 战斗规则验证</div>
@@ -2359,7 +2552,9 @@ function renderMainPage() {
           `
           : ""}
       </section>
-    </main>
+      </main>
+      ${renderSubmissionOverlay()}
+    </div>
   `;
 }
 
@@ -2368,7 +2563,9 @@ function renderApp(container: HTMLElement) {
   const snapshot = captureRenderState();
   container.innerHTML = state.editingUnitId ? renderUnitEditorPage() : renderMainPage();
   bindEvents(container);
-  restoreRenderState(snapshot, container);
+  if (!state.isSubmitting) {
+    restoreRenderState(snapshot, container);
+  }
 }
 
 function bindEvents(container: HTMLElement) {
@@ -2607,8 +2804,16 @@ function bindEvents(container: HTMLElement) {
   });
 
   container.querySelector("[data-action='simulate']")?.addEventListener("click", async () => {
-    stopReplay();
-    await runSimulation();
+    await runSimulation(container);
+  });
+
+  container.querySelector("[data-action='cancel-simulation']")?.addEventListener("click", () => {
+    if (!activeSubmission) {
+      return;
+    }
+
+    state.submissionLabel = "正在停止本次运行";
+    stopActiveSubmission();
     renderApp(container);
   });
 

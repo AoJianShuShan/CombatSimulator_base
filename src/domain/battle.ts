@@ -1,5 +1,5 @@
 import { createDefaultUnitStats } from "./attributeMacros.ts";
-import { battleNumberDefaults } from "./battleConfigMacros.ts";
+import { createBattleNumberDefaults, createCurrentTimeUint32 } from "./battleConfigMacros.ts";
 
 export type TeamId = "A" | "B";
 export type TargetingStrategy = "front" | "lowestHp" | "highestAttack";
@@ -163,7 +163,7 @@ export interface BattleBatchSummaryResult {
 }
 
 export function createBattleRandomSeed() {
-  return Math.trunc(Date.now()) >>> 0;
+  return createCurrentTimeUint32();
 }
 
 export function getDefaultUnitPosition(order: number): UnitPosition {
@@ -172,7 +172,6 @@ export function getDefaultUnitPosition(order: number): UnitPosition {
 
 export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
   const prefix = teamId === "A" ? "红" : "蓝";
-  const defaultSpeed = teamId === "A" ? 10 : 9;
 
   return {
     id: `${teamId}-${order}`,
@@ -182,8 +181,7 @@ export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
     attackElement: "none",
     protectionType: "none",
     stats: {
-      ...createDefaultUnitStats(),
-      speed: defaultSpeed,
+      ...createDefaultUnitStats(teamId),
     },
     extras: {},
   };
@@ -192,8 +190,7 @@ export function createDefaultUnit(teamId: TeamId, order: number): UnitConfig {
 export function createDefaultBattleInput(): BattleInput {
   return {
     battle: {
-      ...battleNumberDefaults,
-      randomSeed: createBattleRandomSeed(),
+      ...createBattleNumberDefaults(),
       targetingStrategy: "front",
       actionResolutionMode: "arpgSimultaneous",
       teamNames: {
