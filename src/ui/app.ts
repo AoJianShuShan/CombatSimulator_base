@@ -50,6 +50,7 @@ import { fetchBackendHealth, simulateBattleBatchByApi, simulateBattleByApi } fro
 type SimulationMode = "local" | "backend";
 type SimulationView = "single" | "batch";
 type MessageTone = "error" | "success";
+type HeroMetaTone = "a" | "accent" | "b" | "blue" | "neutral";
 
 interface RenderStateSnapshot {
   scrollX: number;
@@ -942,6 +943,27 @@ function formatSignedSummaryRate(value: number) {
   return formatted;
 }
 
+function getSimulationModeLabel(mode: SimulationMode) {
+  return mode === "local" ? "前端本地运行" : "后端 API";
+}
+
+function renderHeroMeta(items: Array<{ label: string; tone?: HeroMetaTone; value: string }>) {
+  return `
+    <div class="hero-meta">
+      ${items
+        .map(
+          (item) => `
+            <div class="hero-pill hero-pill-${item.tone ?? "neutral"}">
+              <span>${escapeHtml(item.label)}</span>
+              <strong>${escapeHtml(item.value)}</strong>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderSimulationViewTabs() {
   return `
     <div class="view-switch" role="tablist" aria-label="执行视图">
@@ -1534,7 +1556,7 @@ function renderReplaySnapshot() {
           const teamUnits = replayUnits.filter((unit) => unit.teamId === teamId);
 
           return `
-            <article class="panel panel-inner">
+            <article class="panel panel-inner panel-replay-team panel-team-${teamId.toLowerCase()}">
               <div class="panel-body">
                 <div class="panel-header">
                   <h3 class="panel-title">${escapeHtml(state.draft.battle.teamNames[teamId])} 当前状态</h3>
@@ -1543,7 +1565,7 @@ function renderReplaySnapshot() {
                   ${teamUnits
                     .map(
                       (unit) => `
-                        <article class="unit-card replay-unit ${unit.isAlive ? "" : "unit-card-defeated"}">
+                        <article class="unit-card unit-card-team-${unit.teamId.toLowerCase()} replay-unit ${unit.isAlive ? "" : "unit-card-defeated"}">
                           <header>
                             <strong>${escapeHtml(unit.name)}</strong>
                             <span class="badge badge-${unit.teamId.toLowerCase()}">${unit.isAlive ? "存活" : "阵亡"}</span>
@@ -1624,7 +1646,7 @@ function renderUnitCard(unit: BattleInput["units"][number]) {
   const slot = getUnitPositionSlot(unit.id);
 
   return `
-    <article class="unit-card unit-card-compact" draggable="true" data-action="drag-unit" data-unit-id="${unit.id}">
+    <article class="unit-card unit-card-team-${unit.teamId.toLowerCase()} unit-card-compact" draggable="true" data-action="drag-unit" data-unit-id="${unit.id}">
       <div class="unit-card-name">
         <input
           class="unit-name-input"
@@ -1727,13 +1749,13 @@ function renderFormationMatrix(teamId: TeamId) {
   const displayOrder = teamId === "A" ? [...unitPositionOrder].reverse() : unitPositionOrder;
 
   return `
-    <div class="formation-grid ${teamId === "A" ? "formation-grid-mirrored" : ""}">
+    <div class="formation-grid formation-grid-team-${teamId.toLowerCase()} ${teamId === "A" ? "formation-grid-mirrored" : ""}">
       ${displayOrder
         .map((position) => {
           const units = getUnitsByTeamAndPosition(teamId, position);
 
           return `
-            <section class="formation-column">
+            <section class="formation-column formation-column-${teamId.toLowerCase()}">
               <header class="formation-column-header">
                 <h3>${unitPositionLabels[position]}</h3>
                 <span>${units.length} 人</span>
@@ -1761,17 +1783,23 @@ function renderUnitEditorPage() {
     <main class="page page-subpage">
       <section class="hero hero-subpage">
         <button class="button button-ghost" data-action="close-unit-editor">返回编队总览</button>
-        <div>
+        <div class="hero-content">
+          <div class="hero-kicker">单位编辑</div>
           <h1>${escapeHtml(unit.name)}</h1>
           <p>
             当前单位属于 ${escapeHtml(state.draft.battle.teamNames[unit.teamId])}，属性较多时统一在这里编辑，
             主页面只保留概览和结果区。
           </p>
+          ${renderHeroMeta([
+            { label: "所属队伍", tone: unit.teamId.toLowerCase() as HeroMetaTone, value: state.draft.battle.teamNames[unit.teamId] },
+            { label: "攻击元素", tone: "neutral", value: attackElementLabels[unit.attackElement] },
+            { label: "防护类型", tone: "neutral", value: protectionTypeLabels[unit.protectionType] },
+          ])}
         </div>
       </section>
 
       <section class="layout">
-        <article class="panel">
+        <article class="panel panel-editor panel-editor-${unit.teamId.toLowerCase()}">
           <div class="panel-body">
             <div class="panel-header">
               <h2 class="panel-title">基础信息</h2>
@@ -1804,7 +1832,7 @@ function renderUnitEditorPage() {
           </div>
         </article>
 
-        <article class="panel">
+        <article class="panel panel-editor panel-editor-${unit.teamId.toLowerCase()}">
           <div class="panel-body">
             <div class="panel-header">
               <h2 class="panel-title">属性详情</h2>
@@ -1837,22 +1865,26 @@ function renderSingleSummary() {
       : survivors
           .map((unit) => `${escapeHtml(unit.name.trim() || unit.id)}：${escapeHtml(formatHpText(unit.currentHp, getEffectiveMaxHp(unit)))}`)
           .join("<br />");
+  const winnerToneClass =
+    state.result.winnerTeamId === null
+      ? "summary-item-neutral"
+      : `summary-item-highlight summary-item-team-${state.result.winnerTeamId.toLowerCase()}`;
 
   return `
     <div class="summary">
-      <div class="summary-item">
+      <div class="summary-item summary-item-neutral">
         <span>随机种子</span>
         <strong>${state.result.randomSeed}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item ${winnerToneClass}">
         <span>战斗结果</span>
         <strong>${escapeHtml(winner)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-blue">
         <span>完成回合</span>
         <strong>${state.result.roundsCompleted}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-highlight">
         <span>幸存单位</span>
         <strong>${survivorText}</strong>
       </div>
@@ -1877,51 +1909,51 @@ function renderBatchSummary() {
 
   return `
     <div class="summary">
-      <div class="summary-item">
+      <div class="summary-item summary-item-neutral">
         <span>根种子</span>
         <strong>${state.batchSummary.baseSeed}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-highlight">
         <span>总场次</span>
         <strong>${state.batchSummary.totalBattles}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-team-a">
         <span>${escapeHtml(state.draft.battle.teamNames.A)}胜场 / 胜率</span>
         <strong>${state.batchSummary.wins.A} / ${formatSummaryRate(state.batchSummary.winRates.A)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-team-b">
         <span>${escapeHtml(state.draft.battle.teamNames.B)}胜场 / 胜率</span>
         <strong>${state.batchSummary.wins.B} / ${formatSummaryRate(state.batchSummary.winRates.B)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-team-a">
         <span>${escapeHtml(state.draft.battle.teamNames.A)}平均终局净优势</span>
         <strong>${formatSignedSummaryRate(state.batchSummary.averageTerminalNetAdvantages.A)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-team-b">
         <span>${escapeHtml(state.draft.battle.teamNames.B)}平均终局净优势</span>
         <strong>${formatSignedSummaryRate(state.batchSummary.averageTerminalNetAdvantages.B)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-team-a">
         <span>${escapeHtml(state.draft.battle.teamNames.A)}获胜场次总剩余血量%</span>
         <strong>${formatNullableSummaryRate(state.batchSummary.remainingHpRatesOnWins.A)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-team-b">
         <span>${escapeHtml(state.draft.battle.teamNames.B)}获胜场次总剩余血量%</span>
         <strong>${formatNullableSummaryRate(state.batchSummary.remainingHpRatesOnWins.B)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-neutral">
         <span>平局场次 / 占比</span>
         <strong>${state.batchSummary.draws} / ${formatSummaryRate(state.batchSummary.drawRate)}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-blue">
         <span>${averageCompletionLabel}</span>
         <strong>${averageCompletionValue}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-neutral">
         <span>${minCompletionLabel}</span>
         <strong>${minCompletionValue}</strong>
       </div>
-      <div class="summary-item">
+      <div class="summary-item summary-item-neutral">
         <span>${maxCompletionLabel}</span>
         <strong>${maxCompletionValue}</strong>
       </div>
@@ -1998,22 +2030,24 @@ function renderLogTable() {
         />
       </div>
     </div>
-    <table class="log-table">
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>${primaryTimeLabel}</th>
-          <th>事件类型</th>
-          <th>执行者</th>
-          <th>目标</th>
-          <th>说明</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-        <tr class="log-empty-row" data-role="log-empty-row" hidden><td colspan="6">没有匹配的事件</td></tr>
-      </tbody>
-    </table>
+    <div class="log-table-wrap">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>${primaryTimeLabel}</th>
+            <th>事件类型</th>
+            <th>执行者</th>
+            <th>目标</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+          <tr class="log-empty-row" data-role="log-empty-row" hidden><td colspan="6">没有匹配的事件</td></tr>
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -2043,15 +2077,22 @@ function renderMainPage() {
   return `
     <main class="page">
       <section class="hero">
+        <div class="hero-kicker">内部工具 · 战斗规则验证</div>
         <h1>基础战斗模拟器</h1>
         <p>
           当前版本已经支持统一时间轴下的两种行动结算模式、射速、弹匣、换弹、元素关系与多乘区伤害结算。
           后续继续增加技能、状态和更复杂的时序规则时，可以直接在现有事件流和模拟引擎上迭代。
         </p>
+        ${renderHeroMeta([
+          { label: "执行方式", tone: state.simulationMode === "local" ? "accent" : "blue", value: getSimulationModeLabel(state.simulationMode) },
+          { label: "当前视图", tone: "neutral", value: isSingleView ? "单场模拟" : `多场统计 · ${state.batchCount} 场` },
+          { label: "行动结算", tone: "blue", value: actionResolutionModeLabels[state.draft.battle.actionResolutionMode] },
+          { label: "目标策略", tone: "neutral", value: targetingStrategyLabels[state.draft.battle.targetingStrategy] },
+        ])}
       </section>
 
       <section class="layout">
-        <article class="panel">
+        <article class="panel panel-parameters">
           <div class="panel-body">
             <div class="panel-header">
               <h2 class="panel-title">整场战斗参数</h2>
@@ -2081,20 +2122,6 @@ function renderMainPage() {
                 <label>后端检查</label>
                 <button class="button button-ghost" data-action="check-backend" ${state.isSubmitting ? "disabled" : ""}>检查连接</button>
               </div>
-              ${isSingleView ? "" : `
-                <div class="field">
-                  <label>模拟场次</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="5000"
-                    step="1"
-                    data-action="update-batch-count"
-                    data-focus-key="batch-count"
-                    value="${state.batchCount}"
-                  />
-                </div>
-              `}
               <div class="field">
                 <label>红方名称</label>
                 <input
@@ -2140,6 +2167,20 @@ function renderMainPage() {
                     .join("")}
                 </select>
               </div>
+              ${isSingleView ? "" : `
+                <div class="field">
+                  <label>模拟场次</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="5000"
+                    step="1"
+                    data-action="update-batch-count"
+                    data-focus-key="batch-count"
+                    value="${state.batchCount}"
+                  />
+                </div>
+              `}
             </div>
             ${renderMessage()}
           </div>
@@ -2152,13 +2193,13 @@ function renderMainPage() {
               const buttonStyle = isTeamA ? "button-secondary" : "button-ghost";
 
               return `
-                <article class="panel">
+                <article class="panel panel-team panel-team-${teamId.toLowerCase()}">
                   <div class="panel-body">
                     <div class="panel-header">
                       <h2 class="panel-title">${escapeHtml(state.draft.battle.teamNames[teamId])} 编队</h2>
                       <button class="button ${buttonStyle}" data-action="add-unit" data-team-id="${teamId}">新增单位</button>
                     </div>
-                    <p class="empty">编队按前排、中排、后排展示。“前排优先”策略会先攻击敌方前排，前排清空后再打中排、后排。</p>
+                    <p class="empty section-note">编队按前排、中排、后排展示。“前排优先”策略会先攻击敌方前排，前排清空后再打中排、后排。</p>
                     ${renderFormationMatrix(teamId)}
                   </div>
                 </article>
@@ -2167,7 +2208,7 @@ function renderMainPage() {
             .join("")}
         </section>
 
-        <article class="panel">
+        <article class="panel panel-results">
           <div class="panel-body">
             <div class="panel-header">
               <h2 class="panel-title">${isSingleView ? "模拟结果" : "统计结果"}</h2>
@@ -2181,7 +2222,7 @@ function renderMainPage() {
 
         ${isSingleView
           ? `
-            <article class="panel">
+            <article class="panel panel-replay">
               <div class="panel-body">
                 <div class="panel-header">
                   <h2 class="panel-title">战斗回放</h2>
@@ -2190,7 +2231,7 @@ function renderMainPage() {
               </div>
             </article>
 
-            <article class="panel">
+            <article class="panel panel-current-event">
               <div class="panel-body">
                 <div class="panel-header">
                   <h2 class="panel-title">当前事件</h2>
@@ -2199,7 +2240,7 @@ function renderMainPage() {
               </div>
             </article>
 
-            <article class="panel">
+            <article class="panel panel-log">
               <div class="panel-body">
                 <div class="panel-header">
                   <h2 class="panel-title">事件日志</h2>
