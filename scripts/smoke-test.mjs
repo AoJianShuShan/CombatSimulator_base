@@ -225,6 +225,226 @@ const turnBasedResult = simulateBattle({
     },
   ],
 });
+const fireRateResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 2,
+    minimumDamage: 1,
+    randomSeed: 20260312,
+    targetingStrategy: "front",
+    actionResolutionMode: "arpgSimultaneous",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "高射速红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 5,
+        defense: 0,
+        speed: 1,
+        fireRate: 120,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "低射速蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 5,
+        defense: 0,
+        speed: 99,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
+const reloadResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 2,
+    minimumDamage: 1,
+    randomSeed: 20260313,
+    targetingStrategy: "front",
+    actionResolutionMode: "arpgSimultaneous",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "换弹红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 5,
+        defense: 0,
+        speed: 1,
+        fireRate: 120,
+        reloadTimeMs: 800,
+        magazineCapacity: 1,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "受击蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 1,
+        defense: 0,
+        speed: 1,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
+const turnBasedTimelineResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 2,
+    minimumDamage: 1,
+    randomSeed: 20260314,
+    targetingStrategy: "front",
+    actionResolutionMode: "turnBasedSpeed",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "高射速低速度红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 5,
+        defense: 0,
+        speed: 1,
+        fireRate: 120,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "低射速高速度蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 5,
+        defense: 0,
+        speed: 99,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
+const maxBattleTimeResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 10,
+    maxBattleTimeMs: 700,
+    minimumDamage: 1,
+    randomSeed: 20260316,
+    targetingStrategy: "front",
+    actionResolutionMode: "arpgSimultaneous",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "限时红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 5,
+        defense: 0,
+        speed: 1,
+        fireRate: 120,
+        reloadTimeMs: 800,
+        magazineCapacity: 1,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "限时蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 100,
+        attack: 1,
+        defense: 0,
+        speed: 1,
+        fireRate: 60,
+        reloadTimeMs: 1200,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
 
 if (JSON.stringify(result) !== JSON.stringify(replayResult)) {
   throw new Error("相同随机种子未得到完全一致的战斗结果");
@@ -238,7 +458,10 @@ if (
   singleBatchResult.totalBattles !== 1 ||
   singleBatchResult.averageRounds !== result.roundsCompleted ||
   singleBatchResult.minRounds !== result.roundsCompleted ||
-  singleBatchResult.maxRounds !== result.roundsCompleted
+  singleBatchResult.maxRounds !== result.roundsCompleted ||
+  singleBatchResult.averageDurationMs !== (result.events.at(-1)?.payload?.timelineMs ?? 0) ||
+  singleBatchResult.minDurationMs !== (result.events.at(-1)?.payload?.timelineMs ?? 0) ||
+  singleBatchResult.maxDurationMs !== (result.events.at(-1)?.payload?.timelineMs ?? 0)
 ) {
   throw new Error("count = 1 的批量摘要与单场结果统计不一致");
 }
@@ -281,7 +504,7 @@ if (
   simultaneousDrawResult.winnerTeamId !== null ||
   simultaneousDrawResult.finalUnits.some((unit) => unit.isAlive)
 ) {
-  throw new Error("Arpg同时出手模式未正确处理同归于尽");
+  throw new Error("Arpg即时制（时间）模式未正确处理同归于尽");
 }
 
 if (
@@ -290,6 +513,51 @@ if (
   turnBasedResult.finalUnits.find((unit) => unit.id === "B-1")?.isAlive !== true
 ) {
   throw new Error("回合制速度高者先手模式未正确按速度决定先手");
+}
+
+const fireRateTurnSequence = fireRateResult.events
+  .filter((event) => event.type === "turn_started")
+  .map((event) => `${event.actorId}@${event.payload?.timelineMs ?? "?"}`)
+  .join("|");
+const firstFireRateTurnEvent = fireRateResult.events.find((event) => event.type === "turn_started" && event.actorId === "A-1");
+if (fireRateTurnSequence !== "A-1@0|B-1@0|A-1@500") {
+  throw new Error(`射速未正确影响行动频率: ${fireRateTurnSequence}`);
+}
+if (firstFireRateTurnEvent?.payload?.fireRate !== 120) {
+  throw new Error(`turn_started 事件未透出射速: ${firstFireRateTurnEvent?.payload?.fireRate ?? "missing"}`);
+}
+
+const reloadStartedEvent = reloadResult.events.find((event) => event.type === "reload_started" && event.actorId === "A-1");
+const reloadCompletedEvent = reloadResult.events.find((event) => event.type === "reload_completed" && event.actorId === "A-1");
+const reloadTurnTimes = reloadResult.events
+  .filter((event) => event.type === "turn_started" && event.actorId === "A-1")
+  .map((event) => event.payload?.timelineMs ?? null);
+if (
+  reloadStartedEvent?.payload?.reloadUntilMs !== 800 ||
+  reloadCompletedEvent?.payload?.timelineMs !== 800 ||
+  JSON.stringify(reloadTurnTimes) !== JSON.stringify([0, 800])
+) {
+  throw new Error("弹匣与换弹时间未正确驱动下一次行动");
+}
+
+const turnBasedTimelineSequence = turnBasedTimelineResult.events
+  .filter((event) => event.type === "turn_started")
+  .map((event) => `${event.actorId}@${event.payload?.timelineMs ?? "?"}`)
+  .join("|");
+if (turnBasedTimelineSequence !== "B-1@0|A-1@0|A-1@500") {
+  throw new Error(`回合制速度模式未正确处理同一时刻先后手与射速频率: ${turnBasedTimelineSequence}`);
+}
+
+const maxBattleTimeEventTimes = maxBattleTimeResult.events
+  .map((event) => (typeof event.payload?.timelineMs === "number" ? event.payload.timelineMs : 0));
+if (
+  maxBattleTimeResult.roundsCompleted !== 1 ||
+  maxBattleTimeResult.events.some((event) => event.type === "reload_completed") ||
+  maxBattleTimeResult.events.some((event) => event.type === "turn_started" && event.payload?.timelineMs === 800) ||
+  maxBattleTimeResult.events.at(-1)?.payload?.endReason !== "maxBattleTimeMs" ||
+  Math.max(...maxBattleTimeEventTimes) > 700
+) {
+  throw new Error("最大战斗时长未正确限制时间轴推进");
 }
 
 console.log(
@@ -303,6 +571,11 @@ console.log(
       survivingUnits: result.finalUnits.filter((unit) => unit.isAlive).map((unit) => unit.name),
       simultaneousDrawWinner: simultaneousDrawResult.winnerTeamId,
       turnBasedWinner: turnBasedResult.winnerTeamId,
+      fireRateTurnSequence,
+      reloadTurnTimes,
+      turnBasedTimelineSequence,
+      maxBattleTimeRounds: maxBattleTimeResult.roundsCompleted,
+      maxBattleTimeEndReason: maxBattleTimeResult.events.at(-1)?.payload?.endReason ?? null,
       batchSummary: batchResult,
     },
     null,

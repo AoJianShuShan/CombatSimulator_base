@@ -19,6 +19,9 @@ class UnitStats(TypedDict):
     defense: int
     defenseRate: int | float
     speed: int
+    fireRate: int
+    reloadTimeMs: int
+    magazineCapacity: int
     critChance: int | float
     critMultiplier: int | float
     hitChance: int | float
@@ -52,6 +55,7 @@ class UnitConfig(TypedDict):
 
 class BattleConfig(TypedDict):
     maxRounds: int
+    maxBattleTimeMs: int
     minimumDamage: int
     randomSeed: int
     targetingStrategy: TargetingStrategy
@@ -96,3 +100,6 @@ class BattleBatchSummaryResult(TypedDict):
     averageRounds: float
     minRounds: int
     maxRounds: int
+    averageDurationMs: float
+    minDurationMs: float
+    maxDurationMs: float

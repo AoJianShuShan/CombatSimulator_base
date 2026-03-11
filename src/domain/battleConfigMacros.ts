@@ -1,5 +1,6 @@
 export type BattleNumberFieldKey =
   | "maxRounds"
+  | "maxBattleTimeMs"
   | "minimumDamage"
   | "randomSeed"
   | "armorFormulaBase"

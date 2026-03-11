@@ -9,6 +9,13 @@
       "step": 1
     },
     {
+      "key": "maxBattleTimeMs",
+      "label": "最大战斗时长(ms)",
+      "default": 200000,
+      "min": 0,
+      "step": 1
+    },
+    {
       "key": "minimumDamage",
       "label": "最小伤害",
       "default": 1,

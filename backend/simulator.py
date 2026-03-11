@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from math import floor
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from backend.attribute_macros import get_unit_stat_role_keys
 from backend.models import (
@@ -20,7 +20,11 @@ from backend.models import (
 
 RuntimeUnit = dict[str, Any]
 AttackResolution = dict[str, Any]
+TimelineDriver = Callable[[BattleInput, list[RuntimeUnit], list[dict[str, Any]], int, float, "SeededRandom"], None]
+BattleEndReason = str
 UNIT_STAT_ROLE_KEYS = get_unit_stat_role_keys()
+FIRE_INTERVAL_BASE_MS = 60000.0
+TIME_EPSILON = 1e-6
 UNIT_POSITION_PRIORITY: dict[UnitPosition, int] = {
     "front": 0,
     "middle": 1,
@@ -61,6 +65,18 @@ def _round_half_up(value: float) -> int:
     return floor(value + 0.5)
 
 
+def _round_to_two_decimals(value: float) -> float:
+    return round(value, 2)
+
+
+def _round_to_four_decimals(value: float) -> float:
+    return round(value, 4)
+
+
+def _normalize_timeline_value(value: float) -> float:
+    return _round_to_four_decimals(value)
+
+
 def _clamp_percentage(value: float) -> float:
     return max(0.0, min(100.0, value))
 
@@ -69,12 +85,8 @@ def _clamp_multiplier(value: float) -> float:
     return max(0.0, value)
 
 
-def _round_to_two_decimals(value: float) -> float:
-    return round(value, 2)
-
-
-def _round_to_four_decimals(value: float) -> float:
-    return round(value, 4)
+def _is_timeline_ready(value: float, timeline_ms: float) -> bool:
+    return value <= timeline_ms + TIME_EPSILON
 
 
 def _mix_seed(base_seed: int, index: int) -> int:
@@ -95,8 +107,8 @@ def _get_scaled_stat(base_value: float, rate: float) -> int:
     return max(0, _round_half_up(base_value * (1 + rate / 100)))
 
 
-def _get_effective_max_hp(unit: RuntimeUnit) -> int:
-    stats = unit["stats"]
+def _get_effective_max_hp(unit_or_stats: RuntimeUnit | dict[str, Any]) -> int:
+    stats = unit_or_stats["stats"] if "stats" in unit_or_stats else unit_or_stats
     return max(
         1,
         _get_scaled_stat(
@@ -106,20 +118,44 @@ def _get_effective_max_hp(unit: RuntimeUnit) -> int:
     )
 
 
-def _get_effective_attack(unit: RuntimeUnit) -> int:
-    stats = unit["stats"]
+def _get_battle_duration_ms(result: dict[str, Any]) -> float:
+    events = result.get("events")
+    if not isinstance(events, list) or len(events) == 0:
+        return 0.0
+
+    last_event = events[-1]
+    payload = last_event.get("payload") if isinstance(last_event, dict) else None
+    timeline_ms = payload.get("timelineMs") if isinstance(payload, dict) else None
+    return float(timeline_ms) if isinstance(timeline_ms, (int, float)) else 0.0
+
+
+def _get_effective_attack(unit_or_stats: RuntimeUnit | dict[str, Any]) -> int:
+    stats = unit_or_stats["stats"] if "stats" in unit_or_stats else unit_or_stats
     return _get_scaled_stat(
         float(stats[UNIT_STAT_ROLE_KEYS["attackBase"]]),
         float(stats[UNIT_STAT_ROLE_KEYS["attackRate"]]),
     )
 
 
-def _get_effective_defense(unit: RuntimeUnit) -> int:
-    stats = unit["stats"]
+def _get_effective_defense(unit_or_stats: RuntimeUnit | dict[str, Any]) -> int:
+    stats = unit_or_stats["stats"] if "stats" in unit_or_stats else unit_or_stats
     return _get_scaled_stat(
         float(stats[UNIT_STAT_ROLE_KEYS["defenseBase"]]),
         float(stats[UNIT_STAT_ROLE_KEYS["defenseRate"]]),
     )
+
+
+def _get_magazine_capacity(stats: dict[str, Any]) -> int:
+    return max(1, int(float(stats[UNIT_STAT_ROLE_KEYS["magazineCapacity"]])))
+
+
+def _get_reload_time_ms(stats: dict[str, Any]) -> float:
+    return max(0.0, float(stats[UNIT_STAT_ROLE_KEYS["reloadTimeMs"]]))
+
+
+def _get_fire_interval_ms(stats: dict[str, Any]) -> float:
+    fire_rate = max(1.0, float(stats[UNIT_STAT_ROLE_KEYS["fireRate"]]))
+    return _normalize_timeline_value(FIRE_INTERVAL_BASE_MS / fire_rate)
 
 
 def _get_armor_reduction_rate(battle: dict[str, Any], actor: RuntimeUnit, target: RuntimeUnit) -> float:
@@ -159,11 +195,13 @@ def _get_element_relation(battle: dict[str, Any], actor: RuntimeUnit, target: Ru
 def _clone_unit(unit: UnitConfig, initial_order: int) -> RuntimeUnit:
     runtime_unit: RuntimeUnit = {
         **deepcopy(unit),
-        "currentHp": 0,
-        "isAlive": True,
+        "currentAmmo": _get_magazine_capacity(unit["stats"]),
+        "currentHp": _get_effective_max_hp(unit),
         "initialOrder": initial_order,
+        "isAlive": True,
+        "nextAttackTimeMs": 0.0,
+        "reloadUntilMs": None,
     }
-    runtime_unit["currentHp"] = _get_effective_max_hp(runtime_unit)
     return runtime_unit
 
 
@@ -190,9 +228,8 @@ def _compare_target_priority(unit: RuntimeUnit) -> tuple[int, int]:
 
 
 def _sort_turn_order(units: list[RuntimeUnit]) -> list[RuntimeUnit]:
-    alive_units = [unit for unit in units if unit["isAlive"]]
     return sorted(
-        alive_units,
+        units,
         key=lambda unit: (
             -int(unit["stats"][UNIT_STAT_ROLE_KEYS["speed"]]),
             str(unit["teamId"]),
@@ -202,8 +239,7 @@ def _sort_turn_order(units: list[RuntimeUnit]) -> list[RuntimeUnit]:
 
 
 def _get_simultaneous_action_order(units: list[RuntimeUnit]) -> list[RuntimeUnit]:
-    alive_units = [unit for unit in units if unit["isAlive"]]
-    return sorted(alive_units, key=lambda unit: int(unit["initialOrder"]))
+    return sorted(units, key=lambda unit: int(unit["initialOrder"]))
 
 
 def _pick_target(
@@ -330,16 +366,18 @@ def _resolve_attack(
         "targetId": target["id"],
         "targetName": target["name"],
         "targetMaxHp": _get_effective_max_hp(target),
-        "damage": damage,
+        "effectiveAttack": effective_attack,
+        "effectiveDefense": effective_defense,
         "baseDamage": base_damage,
-        "isCritical": is_critical,
-        "criticalMultiplier": critical_multiplier,
-        "isHeadshot": is_headshot,
-        "headshotMultiplier": headshot_multiplier,
+        "damage": damage,
         "armorValue": float(target["stats"][UNIT_STAT_ROLE_KEYS["armor"]]),
         "armorPenetration": float(actor["stats"][UNIT_STAT_ROLE_KEYS["armorPenetration"]]),
         "armorReductionRate": armor_reduction_rate,
         "armorMultiplier": armor_multiplier,
+        "isCritical": is_critical,
+        "criticalMultiplier": critical_multiplier,
+        "isHeadshot": is_headshot,
+        "headshotMultiplier": headshot_multiplier,
         "elementRelation": element_relation,
         "elementMultiplier": element_multiplier,
         "scenarioMultiplier": scenario_multiplier,
@@ -350,12 +388,40 @@ def _resolve_attack(
         "damageTakenMultiplier": damage_taken_multiplier,
         "finalDamageMultiplier": final_damage_multiplier,
         "isMinimumDamageByDefense": is_minimum_damage_by_defense,
-        "effectiveAttack": effective_attack,
-        "effectiveDefense": effective_defense,
     }
 
 
-def _create_attack_missed_event(events: list[dict[str, Any]], round_index: int, resolution: AttackResolution) -> None:
+def _create_turn_started_event(
+    events: list[dict[str, Any]],
+    round_index: int,
+    timeline_ms: float,
+    actor: RuntimeUnit,
+    target: RuntimeUnit,
+) -> None:
+    _create_event(
+        events,
+        {
+            "type": "turn_started",
+            "round": round_index,
+            "actorId": actor["id"],
+            "targetId": target["id"],
+            "summary": f'{actor["name"]} 对 {target["name"]} 发起攻击',
+            "payload": {
+                "fireRate": _round_to_two_decimals(max(1.0, float(actor["stats"][UNIT_STAT_ROLE_KEYS["fireRate"]]))),
+                "currentAmmo": int(actor["currentAmmo"]),
+                "magazineCapacity": _get_magazine_capacity(actor["stats"]),
+                "timelineMs": timeline_ms,
+            },
+        },
+    )
+
+
+def _create_attack_missed_event(
+    events: list[dict[str, Any]],
+    round_index: int,
+    timeline_ms: float,
+    resolution: AttackResolution,
+) -> None:
     _create_event(
         events,
         {
@@ -366,6 +432,7 @@ def _create_attack_missed_event(events: list[dict[str, Any]], round_index: int, 
             "summary": f'{resolution["actorName"]} 攻击 {resolution["targetName"]}，但被闪避或未命中',
             "payload": {
                 "hitChance": resolution["effectiveHitChance"],
+                "timelineMs": timeline_ms,
             },
         },
     )
@@ -374,6 +441,7 @@ def _create_attack_missed_event(events: list[dict[str, Any]], round_index: int, 
 def _create_damage_applied_event(
     events: list[dict[str, Any]],
     round_index: int,
+    timeline_ms: float,
     resolution: AttackResolution,
     target_current_hp: int,
 ) -> None:
@@ -385,7 +453,11 @@ def _create_damage_applied_event(
             "round": round_index,
             "actorId": resolution["actorId"],
             "targetId": resolution["targetId"],
-            "summary": f'{resolution["actorName"]} 对 {resolution["targetName"]} 造成 {resolution["damage"]} 点{damage_tags}伤害，目标剩余 {target_current_hp}/{resolution["targetMaxHp"]} HP{"（不破防）" if resolution["isMinimumDamageByDefense"] else ""}',
+            "summary": (
+                f'{resolution["actorName"]} 对 {resolution["targetName"]} 造成 {resolution["damage"]} 点{damage_tags}伤害，'
+                f'目标剩余 {target_current_hp}/{resolution["targetMaxHp"]} HP'
+                f'{"（不破防）" if resolution["isMinimumDamageByDefense"] else ""}'
+            ),
             "payload": {
                 "damage": resolution["damage"],
                 "baseDamage": resolution["baseDamage"],
@@ -411,6 +483,57 @@ def _create_damage_applied_event(
                 "isMinimumDamageByDefense": resolution["isMinimumDamageByDefense"],
                 "effectiveAttack": resolution["effectiveAttack"],
                 "effectiveDefense": resolution["effectiveDefense"],
+                "timelineMs": timeline_ms,
+            },
+        },
+    )
+
+
+def _create_reload_started_event(
+    events: list[dict[str, Any]],
+    round_index: int,
+    timeline_ms: float,
+    unit: RuntimeUnit,
+) -> None:
+    _create_event(
+        events,
+        {
+            "type": "reload_started",
+            "round": round_index,
+            "actorId": unit["id"],
+            "summary": f'{unit["name"]} 开始换弹',
+            "payload": {
+                "fireRate": _round_to_two_decimals(max(1.0, float(unit["stats"][UNIT_STAT_ROLE_KEYS["fireRate"]]))),
+                "currentAmmo": int(unit["currentAmmo"]),
+                "magazineCapacity": _get_magazine_capacity(unit["stats"]),
+                "nextAttackTimeMs": _normalize_timeline_value(float(unit["nextAttackTimeMs"])),
+                "reloadTimeMs": _round_to_two_decimals(_get_reload_time_ms(unit["stats"])),
+                "reloadUntilMs": unit["reloadUntilMs"],
+                "timelineMs": timeline_ms,
+            },
+        },
+    )
+
+
+def _create_reload_completed_event(
+    events: list[dict[str, Any]],
+    round_index: int,
+    timeline_ms: float,
+    unit: RuntimeUnit,
+) -> None:
+    _create_event(
+        events,
+        {
+            "type": "reload_completed",
+            "round": round_index,
+            "actorId": unit["id"],
+            "summary": f'{unit["name"]} 完成换弹，弹匣恢复至 {unit["currentAmmo"]} 发',
+            "payload": {
+                "fireRate": _round_to_two_decimals(max(1.0, float(unit["stats"][UNIT_STAT_ROLE_KEYS["fireRate"]]))),
+                "currentAmmo": int(unit["currentAmmo"]),
+                "magazineCapacity": _get_magazine_capacity(unit["stats"]),
+                "nextAttackTimeMs": _normalize_timeline_value(float(unit["nextAttackTimeMs"])),
+                "timelineMs": timeline_ms,
             },
         },
     )
@@ -419,6 +542,7 @@ def _create_damage_applied_event(
 def _create_unit_defeated_event(
     events: list[dict[str, Any]],
     round_index: int,
+    timeline_ms: float,
     target: RuntimeUnit,
     actor_id: str | None = None,
 ) -> None:
@@ -430,49 +554,125 @@ def _create_unit_defeated_event(
             "actorId": actor_id,
             "targetId": target["id"],
             "summary": f'{target["name"]} 被击败',
+            "payload": {
+                "timelineMs": timeline_ms,
+            },
         },
     )
 
 
-def _run_sequential_round(
+def _get_next_timeline_ms_for_unit(unit: RuntimeUnit) -> float | None:
+    if not unit["isAlive"]:
+        return None
+
+    if int(unit["currentAmmo"]) <= 0 and unit["reloadUntilMs"] is not None:
+        return float(unit["reloadUntilMs"])
+
+    return float(unit["nextAttackTimeMs"])
+
+
+def _get_next_timeline_ms(units: list[RuntimeUnit]) -> float | None:
+    next_timeline_ms: float | None = None
+
+    for unit in units:
+        candidate = _get_next_timeline_ms_for_unit(unit)
+        if candidate is None:
+            continue
+
+        if next_timeline_ms is None or candidate < next_timeline_ms - TIME_EPSILON:
+            next_timeline_ms = candidate
+
+    return None if next_timeline_ms is None else _normalize_timeline_value(next_timeline_ms)
+
+
+def _complete_reloads_at_time(
+    units: list[RuntimeUnit],
+    events: list[dict[str, Any]],
+    round_index: int,
+    timeline_ms: float,
+) -> None:
+    reload_ready_units = sorted(
+        [
+            unit
+            for unit in units
+            if unit["isAlive"]
+            and int(unit["currentAmmo"]) <= 0
+            and unit["reloadUntilMs"] is not None
+            and _is_timeline_ready(float(unit["reloadUntilMs"]), timeline_ms)
+        ],
+        key=lambda unit: int(unit["initialOrder"]),
+    )
+
+    for unit in reload_ready_units:
+        unit["currentAmmo"] = _get_magazine_capacity(unit["stats"])
+        unit["reloadUntilMs"] = None
+        _create_reload_completed_event(events, round_index, timeline_ms, unit)
+
+
+def _get_attack_ready_units_at_time(units: list[RuntimeUnit], timeline_ms: float) -> list[RuntimeUnit]:
+    return [
+        unit
+        for unit in units
+        if unit["isAlive"] and int(unit["currentAmmo"]) > 0 and _is_timeline_ready(float(unit["nextAttackTimeMs"]), timeline_ms)
+    ]
+
+
+def _advance_actor_timeline_after_attack(
+    actor: RuntimeUnit,
+    events: list[dict[str, Any]],
+    round_index: int,
+    timeline_ms: float,
+    emit_reload_event: bool,
+) -> None:
+    actor["currentAmmo"] = max(0, int(actor["currentAmmo"]) - 1)
+    actor["nextAttackTimeMs"] = _normalize_timeline_value(timeline_ms + _get_fire_interval_ms(actor["stats"]))
+
+    if int(actor["currentAmmo"]) > 0:
+        return
+
+    actor["reloadUntilMs"] = _normalize_timeline_value(timeline_ms + _get_reload_time_ms(actor["stats"]))
+    if emit_reload_event:
+        _create_reload_started_event(events, round_index, timeline_ms, actor)
+
+
+def _run_sequential_timeline_window(
     battle_input: BattleInput,
     units: list[RuntimeUnit],
     events: list[dict[str, Any]],
     round_index: int,
+    timeline_ms: float,
     random: SeededRandom,
 ) -> None:
     targeting_strategy = cast(TargetingStrategy, battle_input["battle"]["targetingStrategy"])
 
-    for actor in _sort_turn_order(units):
-        if not actor["isAlive"]:
+    for next_actor in _sort_turn_order(_get_attack_ready_units_at_time(units, timeline_ms)):
+        actor = next((unit for unit in units if unit["id"] == next_actor["id"]), None)
+        if (
+            actor is None
+            or not actor["isAlive"]
+            or int(actor["currentAmmo"]) <= 0
+            or not _is_timeline_ready(float(actor["nextAttackTimeMs"]), timeline_ms)
+        ):
             continue
 
         target = _pick_target(units, actor, targeting_strategy)
         if target is None:
             break
 
-        _create_event(
-            events,
-            {
-                "type": "turn_started",
-                "round": round_index,
-                "actorId": actor["id"],
-                "targetId": target["id"],
-                "summary": f'{actor["name"]} 对 {target["name"]} 发起攻击',
-            },
-        )
-
+        _create_turn_started_event(events, round_index, timeline_ms, actor, target)
         resolution = _resolve_attack(battle_input, random, actor, target)
+
         if resolution["type"] == "miss":
-            _create_attack_missed_event(events, round_index, resolution)
-            continue
+            _create_attack_missed_event(events, round_index, timeline_ms, resolution)
+        else:
+            target["currentHp"] = max(0, int(target["currentHp"]) - int(resolution["damage"]))
+            target["isAlive"] = target["currentHp"] > 0
+            _create_damage_applied_event(events, round_index, timeline_ms, resolution, int(target["currentHp"]))
 
-        target["currentHp"] = max(0, int(target["currentHp"]) - int(resolution["damage"]))
-        target["isAlive"] = target["currentHp"] > 0
-        _create_damage_applied_event(events, round_index, resolution, int(target["currentHp"]))
+            if not target["isAlive"]:
+                _create_unit_defeated_event(events, round_index, timeline_ms, target, cast(str, resolution["actorId"]))
 
-        if not target["isAlive"]:
-            _create_unit_defeated_event(events, round_index, target, cast(str, resolution["actorId"]))
+        _advance_actor_timeline_after_attack(actor, events, round_index, timeline_ms, bool(actor["isAlive"]))
 
         remaining_enemies = _get_alive_units_by_team(
             units,
@@ -482,16 +682,18 @@ def _run_sequential_round(
             break
 
 
-def _run_simultaneous_round(
+def _run_simultaneous_timeline_window(
     battle_input: BattleInput,
     units: list[RuntimeUnit],
     events: list[dict[str, Any]],
     round_index: int,
+    timeline_ms: float,
     random: SeededRandom,
 ) -> None:
     targeting_strategy = cast(TargetingStrategy, battle_input["battle"]["targetingStrategy"])
     snapshot_units = [_clone_runtime_unit(unit) for unit in units]
-    action_order = _get_simultaneous_action_order(snapshot_units)
+    action_order = _get_simultaneous_action_order(_get_attack_ready_units_at_time(snapshot_units, timeline_ms))
+    actor_ids: list[str] = []
     resolutions: list[AttackResolution] = []
 
     for actor in action_order:
@@ -499,16 +701,8 @@ def _run_simultaneous_round(
         if target is None:
             continue
 
-        _create_event(
-            events,
-            {
-                "type": "turn_started",
-                "round": round_index,
-                "actorId": actor["id"],
-                "targetId": target["id"],
-                "summary": f'{actor["name"]} 对 {target["name"]} 发起攻击',
-            },
-        )
+        _create_turn_started_event(events, round_index, timeline_ms, actor, target)
+        actor_ids.append(cast(str, actor["id"]))
         resolutions.append(_resolve_attack(battle_input, random, actor, target))
 
     defeated_ids: set[str] = set()
@@ -516,7 +710,7 @@ def _run_simultaneous_round(
 
     for resolution in resolutions:
         if resolution["type"] == "miss":
-            _create_attack_missed_event(events, round_index, resolution)
+            _create_attack_missed_event(events, round_index, timeline_ms, resolution)
             continue
 
         target = next((unit for unit in units if unit["id"] == resolution["targetId"]), None)
@@ -525,7 +719,7 @@ def _run_simultaneous_round(
 
         target["currentHp"] = max(0, int(target["currentHp"]) - int(resolution["damage"]))
         target["isAlive"] = target["currentHp"] > 0
-        _create_damage_applied_event(events, round_index, resolution, int(target["currentHp"]))
+        _create_damage_applied_event(events, round_index, timeline_ms, resolution, int(target["currentHp"]))
 
         if not target["isAlive"] and target["id"] not in defeated_ids:
             defeated_ids.add(cast(str, target["id"]))
@@ -536,28 +730,28 @@ def _run_simultaneous_round(
         if target is None:
             continue
 
-        _create_unit_defeated_event(events, round_index, target)
+        _create_unit_defeated_event(events, round_index, timeline_ms, target)
+
+    for actor_id in actor_ids:
+        actor = next((unit for unit in units if unit["id"] == actor_id), None)
+        if actor is None:
+            continue
+
+        _advance_actor_timeline_after_attack(actor, events, round_index, timeline_ms, bool(actor["isAlive"]))
 
 
-def _resolve_round_by_mode(
-    action_resolution_mode: ActionResolutionMode,
-    battle_input: BattleInput,
-    units: list[RuntimeUnit],
-    events: list[dict[str, Any]],
-    round_index: int,
-    random: SeededRandom,
-) -> None:
-    if action_resolution_mode == "arpgSimultaneous":
-        _run_simultaneous_round(battle_input, units, events, round_index, random)
-        return
-
-    _run_sequential_round(battle_input, units, events, round_index, random)
+TIMELINE_DRIVERS: dict[ActionResolutionMode, TimelineDriver] = {
+    "arpgSimultaneous": _run_simultaneous_timeline_window,
+    "turnBasedSpeed": _run_sequential_timeline_window,
+}
 
 
 def simulate_battle(payload: BattleInput) -> dict[str, Any]:
     units = [_clone_unit(unit, index) for index, unit in enumerate(payload["units"])]
     events: list[dict[str, Any]] = []
     rounds_completed = 0
+    last_timeline_ms = 0.0
+    end_reason: BattleEndReason = "teamEliminated"
     battle = payload["battle"]
     random = SeededRandom(int(battle.get("randomSeed", 1)))
     action_resolution_mode = cast(ActionResolutionMode, battle["actionResolutionMode"])
@@ -570,34 +764,49 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
             "summary": f'{battle["teamNames"]["A"]} 与 {battle["teamNames"]["B"]} 的战斗开始',
             "payload": {
                 "actionResolutionMode": action_resolution_mode,
+                "maxBattleTimeMs": battle["maxBattleTimeMs"],
                 "maxRounds": battle["maxRounds"],
+                "timelineMs": 0,
                 "unitCount": len(units),
             },
         },
     )
 
-    for round_index in range(1, int(battle["maxRounds"]) + 1):
+    while rounds_completed < int(battle["maxRounds"]):
         team_a_alive = _get_alive_units_by_team(units, "A")
         team_b_alive = _get_alive_units_by_team(units, "B")
         if not team_a_alive or not team_b_alive:
+            end_reason = "teamEliminated"
             break
 
-        rounds_completed = round_index
+        timeline_ms = _get_next_timeline_ms(units)
+        if timeline_ms is None:
+            end_reason = "teamEliminated"
+            break
+
+        if timeline_ms > float(battle["maxBattleTimeMs"]):
+            end_reason = "maxBattleTimeMs"
+            break
+
+        rounds_completed += 1
+        last_timeline_ms = timeline_ms
         _create_event(
             events,
             {
                 "type": "round_started",
-                "round": round_index,
-                "summary": f"第 {round_index} 回合开始",
+                "round": rounds_completed,
+                "summary": f"第 {rounds_completed} 轮开始",
                 "payload": {
                     "actionResolutionMode": action_resolution_mode,
                     "aliveA": len(team_a_alive),
                     "aliveB": len(team_b_alive),
+                    "timelineMs": timeline_ms,
                 },
             },
         )
 
-        _resolve_round_by_mode(action_resolution_mode, payload, units, events, round_index, random)
+        _complete_reloads_at_time(units, events, rounds_completed, timeline_ms)
+        TIMELINE_DRIVERS[action_resolution_mode](payload, units, events, rounds_completed, timeline_ms, random)
 
     alive_a = _get_alive_units_by_team(units, "A")
     alive_b = _get_alive_units_by_team(units, "B")
@@ -609,19 +818,31 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
     else:
         winner_team_id = None
 
+    if winner_team_id is None and end_reason != "maxBattleTimeMs":
+        end_reason = "maxRounds" if rounds_completed >= int(battle["maxRounds"]) else "teamEliminated"
+
     _create_event(
         events,
         {
             "type": "battle_ended",
             "round": rounds_completed,
-            "summary": "战斗结束，结果为平局"
-            if winner_team_id is None
-            else f'战斗结束，{battle["teamNames"][winner_team_id]}胜利！',
+            "summary": (
+                "战斗结束，达到最大战斗时长，结果按平局处理"
+                if winner_team_id is None and end_reason == "maxBattleTimeMs"
+                else "战斗结束，达到最大回合数，结果按平局处理"
+                if winner_team_id is None and end_reason == "maxRounds"
+                else "战斗结束，结果为平局"
+                if winner_team_id is None
+                else f'战斗结束，{battle["teamNames"][winner_team_id]}胜利！'
+            ),
             "payload": {
                 "actionResolutionMode": action_resolution_mode,
-                "winnerTeamId": winner_team_id,
                 "aliveA": len(alive_a),
                 "aliveB": len(alive_b),
+                "endReason": end_reason,
+                "maxBattleTimeMs": battle["maxBattleTimeMs"],
+                "timelineMs": last_timeline_ms,
+                "winnerTeamId": winner_team_id,
             },
         },
     )
@@ -646,8 +867,16 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
         "B": 0,
     }
     team_max_hp_totals = {
-        "A": sum(_get_effective_max_hp(_clone_unit(unit, index)) for index, unit in enumerate(payload["units"]) if unit["teamId"] == "A"),
-        "B": sum(_get_effective_max_hp(_clone_unit(unit, index)) for index, unit in enumerate(payload["units"]) if unit["teamId"] == "B"),
+        "A": sum(
+            _get_effective_max_hp(_clone_unit(unit, index))
+            for index, unit in enumerate(payload["units"])
+            if unit["teamId"] == "A"
+        ),
+        "B": sum(
+            _get_effective_max_hp(_clone_unit(unit, index))
+            for index, unit in enumerate(payload["units"])
+            if unit["teamId"] == "B"
+        ),
     }
     remaining_hp_totals = {
         "A": 0,
@@ -660,8 +889,11 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
     total_terminal_net_advantage_a = 0.0
     draws = 0
     total_rounds = 0
+    total_duration_ms = 0.0
     min_rounds = float("inf")
     max_rounds = float("-inf")
+    min_duration_ms = float("inf")
+    max_duration_ms = float("-inf")
 
     for index in range(normalized_count):
         battle_seed = derive_battle_seed(int(payload["battle"]["randomSeed"]), index)
@@ -676,9 +908,13 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
         )
 
         rounds_completed = int(result["roundsCompleted"])
+        duration_ms = _get_battle_duration_ms(result)
         total_rounds += rounds_completed
+        total_duration_ms += duration_ms
         min_rounds = min(min_rounds, rounds_completed)
         max_rounds = max(max_rounds, rounds_completed)
+        min_duration_ms = min(min_duration_ms, duration_ms)
+        max_duration_ms = max(max_duration_ms, duration_ms)
         remaining_hp_by_team = {
             "A": sum(int(unit["currentHp"]) for unit in result["finalUnits"] if unit["teamId"] == "A"),
             "B": sum(int(unit["currentHp"]) for unit in result["finalUnits"] if unit["teamId"] == "B"),
@@ -723,4 +959,7 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
         "averageRounds": _round_to_four_decimals(total_rounds / normalized_count),
         "minRounds": int(min_rounds) if min_rounds != float("inf") else 0,
         "maxRounds": int(max_rounds) if max_rounds != float("-inf") else 0,
+        "averageDurationMs": _round_to_four_decimals(total_duration_ms / normalized_count),
+        "minDurationMs": _round_to_four_decimals(min_duration_ms) if min_duration_ms != float("inf") else 0.0,
+        "maxDurationMs": _round_to_four_decimals(max_duration_ms) if max_duration_ms != float("-inf") else 0.0,
     }

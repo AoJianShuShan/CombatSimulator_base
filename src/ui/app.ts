@@ -150,7 +150,8 @@ const unitEditorAttributeSections: Array<{
       { key: "effectiveDefense", label: "有效防御" },
     ],
     rows: [
-      ["speed", "maxHp", "maxHpRate"],
+      ["speed", "fireRate", "reloadTimeMs", "magazineCapacity"],
+      ["maxHp", "maxHpRate"],
       ["attack", "attackRate", "defense", "defenseRate"],
       ["armor", "armorPenetration", "hitChance", "dodgeChance"],
     ],
@@ -182,6 +183,8 @@ const battleEventTypeLabels: Record<BattleEventType, string> = {
   battle_started: "战斗开始",
   round_started: "回合开始",
   turn_started: "行动开始",
+  reload_started: "开始换弹",
+  reload_completed: "换弹完成",
   attack_missed: "攻击落空",
   damage_applied: "伤害结算",
   unit_defeated: "单位阵亡",
@@ -192,6 +195,12 @@ const elementRelationLabels = {
   advantage: "元素克制",
   disadvantage: "元素被克",
   neutral: "元素中性",
+} as const;
+
+const battleEndReasonLabels = {
+  teamEliminated: "一方被消灭",
+  maxRounds: "达到最大回合数",
+  maxBattleTimeMs: "达到最大战斗时长",
 } as const;
 
 function escapeHtml(value: string) {
@@ -965,6 +974,8 @@ function renderReplayControls() {
 
   const currentEvent = state.result.events[state.replayEventIndex];
   const maxIndex = Math.max(0, state.result.events.length - 1);
+  const primaryTimeLabel = getEventPrimaryTimeLabel();
+  const primaryTimeValue = getEventPrimaryTimeValue(currentEvent);
 
   return `
     <div class="replay-panel">
@@ -981,8 +992,8 @@ function renderReplayControls() {
           <strong>${state.replayEventIndex + 1} / ${state.result.events.length}</strong>
         </div>
         <div class="summary-item">
-          <span>时间序号</span>
-          <strong>${currentEvent.timeIndex}</strong>
+          <span>${primaryTimeLabel}</span>
+          <strong>${primaryTimeValue}</strong>
         </div>
         <div class="summary-item">
           <span>事件类型</span>
@@ -1043,6 +1054,46 @@ function getBattleEventTypeLabel(type: BattleEventType) {
   return battleEventTypeLabels[type] ?? type;
 }
 
+function formatTimelineMs(value: number) {
+  const formatCompactNumber = (nextValue: number) => {
+    const roundedValue = Number(nextValue.toFixed(2));
+    return Number.isInteger(roundedValue) ? `${roundedValue}` : `${roundedValue}`;
+  };
+
+  if (Math.abs(value) >= 1000) {
+    return `${formatCompactNumber(value / 1000)} s`;
+  }
+
+  return `${formatCompactNumber(value)} ms`;
+}
+
+function getResultActionResolutionMode() {
+  if (state.result) {
+    const actionResolutionMode = state.result.events[0]?.payload?.actionResolutionMode;
+    if (typeof actionResolutionMode === "string") {
+      return actionResolutionMode as ActionResolutionMode;
+    }
+  }
+
+  return state.draft.battle.actionResolutionMode;
+}
+
+function getEventPrimaryTimeLabel() {
+  return getResultActionResolutionMode() === "turnBasedSpeed" ? "回合" : "时间";
+}
+
+function getEventPrimaryTimeValue(event: BattleSimulationResult["events"][number]) {
+  if (getResultActionResolutionMode() === "turnBasedSpeed") {
+    return `${event.round}`;
+  }
+
+  if (typeof event.payload?.timelineMs === "number") {
+    return formatTimelineMs(event.payload.timelineMs);
+  }
+
+  return "-";
+}
+
 function getEventTargetMaxHp(event: BattleSimulationResult["events"][number]) {
   if (typeof event.payload?.targetMaxHp === "number") {
     return event.payload.targetMaxHp;
@@ -1080,6 +1131,9 @@ function getEventSummaryText(event: BattleSimulationResult["events"][number]) {
   switch (event.type) {
     case "turn_started":
       return actorName && targetName ? `${actorName} 对 ${targetName} 发起攻击` : event.summary;
+    case "reload_started":
+    case "reload_completed":
+      return event.summary;
     case "attack_missed":
       return actorName && targetName ? `${actorName} 攻击 ${targetName}，闪避/未命中` : event.summary;
     case "damage_applied": {
@@ -1095,6 +1149,12 @@ function getEventSummaryText(event: BattleSimulationResult["events"][number]) {
       return targetName ? `${targetName} 被击败` : event.summary;
     case "battle_ended":
       if (event.payload?.winnerTeamId === null) {
+        if (event.payload?.endReason === "maxBattleTimeMs") {
+          return "战斗结束，达到最大战斗时长，结果按平局处理";
+        }
+        if (event.payload?.endReason === "maxRounds") {
+          return "战斗结束，达到最大回合数，结果按平局处理";
+        }
         return "战斗结束，结果为平局";
       }
       if (event.payload?.winnerTeamId === "A" || event.payload?.winnerTeamId === "B") {
@@ -1116,6 +1176,9 @@ function renderEventSummaryHtml(event: BattleSimulationResult["events"][number])
         return `${escapeHtml(actorName)} 对 ${escapeHtml(targetName)} 发起攻击`;
       }
       break;
+    case "reload_started":
+    case "reload_completed":
+      return escapeHtml(event.summary);
     case "attack_missed":
       if (actorName && targetName) {
         return `${escapeHtml(actorName)} 攻击 ${escapeHtml(targetName)}，${renderEventHighlight("闪避/未命中", "miss")}`;
@@ -1138,6 +1201,12 @@ function renderEventSummaryHtml(event: BattleSimulationResult["events"][number])
       break;
     case "battle_ended":
       if (event.payload?.winnerTeamId === null) {
+        if (event.payload?.endReason === "maxBattleTimeMs") {
+          return "战斗结束，达到最大战斗时长，结果按平局处理";
+        }
+        if (event.payload?.endReason === "maxRounds") {
+          return "战斗结束，达到最大回合数，结果按平局处理";
+        }
         return "战斗结束，结果为平局";
       }
       if (event.payload?.winnerTeamId === "A" || event.payload?.winnerTeamId === "B") {
@@ -1228,6 +1297,10 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
   const payload = event.payload ?? {};
   const rows: Array<{ label: string; value: string }> = [];
 
+  if (typeof payload.timelineMs === "number") {
+    rows.push({ label: "时间点", value: formatTimelineMs(payload.timelineMs) });
+  }
+
   switch (event.type) {
     case "battle_started":
       if (typeof payload.actionResolutionMode === "string") {
@@ -1239,6 +1312,12 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       }
       if (typeof payload.maxRounds === "number") {
         rows.push({ label: battleConfigNumberMacroMap.maxRounds.label, value: formatBattleConfigValue("maxRounds", payload.maxRounds) });
+      }
+      if (typeof payload.maxBattleTimeMs === "number") {
+        rows.push({
+          label: "最大战斗时长",
+          value: formatTimelineMs(payload.maxBattleTimeMs),
+        });
       }
       if (typeof payload.unitCount === "number") {
         rows.push({ label: "单位总数", value: `${payload.unitCount}` });
@@ -1273,6 +1352,51 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       }
       if (typeof payload.aliveB === "number") {
         rows.push({ label: "蓝方存活数", value: `${payload.aliveB}` });
+      }
+      break;
+    case "turn_started":
+      if (typeof payload.fireRate === "number") {
+        rows.push({ label: unitAttributeMacroMap.fireRate.label, value: `${payload.fireRate}` });
+      }
+      if (typeof payload.currentAmmo === "number") {
+        rows.push({ label: "当前弹药", value: `${payload.currentAmmo}` });
+      }
+      if (typeof payload.magazineCapacity === "number") {
+        rows.push({ label: "弹匣容量", value: `${payload.magazineCapacity}` });
+      }
+      break;
+    case "reload_started":
+      if (typeof payload.fireRate === "number") {
+        rows.push({ label: unitAttributeMacroMap.fireRate.label, value: `${payload.fireRate}` });
+      }
+      if (typeof payload.currentAmmo === "number") {
+        rows.push({ label: "当前弹药", value: `${payload.currentAmmo}` });
+      }
+      if (typeof payload.magazineCapacity === "number") {
+        rows.push({ label: "弹匣容量", value: `${payload.magazineCapacity}` });
+      }
+      if (typeof payload.reloadTimeMs === "number") {
+        rows.push({ label: "换弹动作时间", value: formatTimelineMs(payload.reloadTimeMs) });
+      }
+      if (typeof payload.reloadUntilMs === "number") {
+        rows.push({ label: "换弹完成时间", value: formatTimelineMs(payload.reloadUntilMs) });
+      }
+      if (typeof payload.nextAttackTimeMs === "number") {
+        rows.push({ label: "下一次攻击时间", value: formatTimelineMs(payload.nextAttackTimeMs) });
+      }
+      break;
+    case "reload_completed":
+      if (typeof payload.fireRate === "number") {
+        rows.push({ label: unitAttributeMacroMap.fireRate.label, value: `${payload.fireRate}` });
+      }
+      if (typeof payload.currentAmmo === "number") {
+        rows.push({ label: "当前弹药", value: `${payload.currentAmmo}` });
+      }
+      if (typeof payload.magazineCapacity === "number") {
+        rows.push({ label: "弹匣容量", value: `${payload.magazineCapacity}` });
+      }
+      if (typeof payload.nextAttackTimeMs === "number") {
+        rows.push({ label: "下一次攻击时间", value: formatTimelineMs(payload.nextAttackTimeMs) });
       }
       break;
     case "attack_missed":
@@ -1365,6 +1489,18 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
         rows.push({
           label: "战斗结果",
           value: `${state.draft.battle.teamNames[payload.winnerTeamId]}胜利！`,
+        });
+      }
+      if (typeof payload.endReason === "string") {
+        rows.push({
+          label: "结束原因",
+          value: battleEndReasonLabels[payload.endReason as keyof typeof battleEndReasonLabels] ?? payload.endReason,
+        });
+      }
+      if (typeof payload.maxBattleTimeMs === "number") {
+        rows.push({
+          label: "最大战斗时长",
+          value: formatTimelineMs(payload.maxBattleTimeMs),
         });
       }
       if (typeof payload.aliveA === "number") {
@@ -1726,8 +1862,18 @@ function renderSingleSummary() {
 
 function renderBatchSummary() {
   if (!state.batchSummary) {
-    return `<p class="empty">输入模拟场次后运行统计，这里会展示胜率、平局率与回合分布摘要。</p>`;
+    return `<p class="empty">输入模拟场次后运行统计，这里会展示胜率、平局率与完成节奏摘要。</p>`;
   }
+
+  const usesRoundMetrics = state.draft.battle.actionResolutionMode === "turnBasedSpeed";
+  const averageCompletionLabel = usesRoundMetrics ? "平均完成回合" : "平均完成时间";
+  const minCompletionLabel = usesRoundMetrics ? "最短回合" : "最短时间";
+  const maxCompletionLabel = usesRoundMetrics ? "最长回合" : "最长时间";
+  const averageCompletionValue = usesRoundMetrics
+    ? `${state.batchSummary.averageRounds}`
+    : formatTimelineMs(state.batchSummary.averageDurationMs);
+  const minCompletionValue = usesRoundMetrics ? `${state.batchSummary.minRounds}` : formatTimelineMs(state.batchSummary.minDurationMs);
+  const maxCompletionValue = usesRoundMetrics ? `${state.batchSummary.maxRounds}` : formatTimelineMs(state.batchSummary.maxDurationMs);
 
   return `
     <div class="summary">
@@ -1768,16 +1914,16 @@ function renderBatchSummary() {
         <strong>${state.batchSummary.draws} / ${formatSummaryRate(state.batchSummary.drawRate)}</strong>
       </div>
       <div class="summary-item">
-        <span>平均完成回合</span>
-        <strong>${state.batchSummary.averageRounds}</strong>
+        <span>${averageCompletionLabel}</span>
+        <strong>${averageCompletionValue}</strong>
       </div>
       <div class="summary-item">
-        <span>最短回合</span>
-        <strong>${state.batchSummary.minRounds}</strong>
+        <span>${minCompletionLabel}</span>
+        <strong>${minCompletionValue}</strong>
       </div>
       <div class="summary-item">
-        <span>最长回合</span>
-        <strong>${state.batchSummary.maxRounds}</strong>
+        <span>${maxCompletionLabel}</span>
+        <strong>${maxCompletionValue}</strong>
       </div>
     </div>
   `;
@@ -1792,6 +1938,7 @@ function renderLogTable() {
     return "";
   }
 
+  const primaryTimeLabel = getEventPrimaryTimeLabel();
   const rows = state.result.events
     .map((event) => {
       const actor = state.draft.units.find((unit) => unit.id === event.actorId);
@@ -1808,8 +1955,7 @@ function renderLogTable() {
       return `
         <tr class="${rowClassNames}" data-action="select-event" data-event-index="${event.sequence - 1}">
           <td>${event.sequence}</td>
-          <td>${event.timeIndex}</td>
-          <td>${event.round}</td>
+          <td>${getEventPrimaryTimeValue(event)}</td>
           <td>${escapeHtml(getBattleEventTypeLabel(event.type))}</td>
           <td>${actorBadge}</td>
           <td>${targetBadge}</td>
@@ -1856,8 +2002,7 @@ function renderLogTable() {
       <thead>
         <tr>
           <th>#</th>
-          <th>时间序号</th>
-          <th>回合</th>
+          <th>${primaryTimeLabel}</th>
           <th>事件类型</th>
           <th>执行者</th>
           <th>目标</th>
@@ -1866,7 +2011,7 @@ function renderLogTable() {
       </thead>
       <tbody>
         ${rows}
-        <tr class="log-empty-row" data-role="log-empty-row" hidden><td colspan="7">没有匹配的事件</td></tr>
+        <tr class="log-empty-row" data-role="log-empty-row" hidden><td colspan="6">没有匹配的事件</td></tr>
       </tbody>
     </table>
   `;
@@ -1900,8 +2045,8 @@ function renderMainPage() {
       <section class="hero">
         <h1>基础战斗模拟器</h1>
         <p>
-          当前版本只实现最简单的攻击-防御回合制，但模型已经分离出单位参数、整场战斗参数与事件流。
-          后续你给出更复杂的属性、技能和算法后，可以直接在领域模型和模拟引擎上继续叠加。
+          当前版本已经支持统一时间轴下的两种行动结算模式、射速、弹匣、换弹、元素关系与多乘区伤害结算。
+          后续继续增加技能、状态和更复杂的时序规则时，可以直接在现有事件流和模拟引擎上迭代。
         </p>
       </section>
 

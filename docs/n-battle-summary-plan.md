@@ -1,8 +1,8 @@
-# N 场战斗摘要功能计划
+# N 场战斗摘要设计与落地记录
 
 ## 文档目的
 
-这份文档用于约束“N 场战斗最终简要结果输出”功能的实现范围、实施顺序与进度状态，避免前后端、领域模型与 UI 同时改动时失控。
+这份文档用于记录 “N 场战斗最终简要结果输出” 功能的设计边界、实现口径与落地状态，避免前后端、领域模型与 UI 后续迭代时口径漂移。
 
 ## 当前结论
 
@@ -54,16 +54,16 @@
 - 新增独立批量接口 `/simulate-batch`。
 - 批量接口默认只返回摘要，不返回完整事件流。
 
-## 数据模型计划
+## 当前数据模型
 
 ### 前端 / 共享领域模型
 
-计划新增：
+当前已新增：
 
 - `BattleBatchRequest`
 - `BattleBatchSummaryResult`
 
-建议摘要字段：
+当前摘要字段：
 
 - `baseSeed`
 - `totalBattles`
@@ -72,19 +72,19 @@
 - `draws`
 - `winRates.A`
 - `winRates.B`
+- `averageTerminalNetAdvantages.A`
+- `averageTerminalNetAdvantages.B`
+- `remainingHpRatesOnWins.A`
+- `remainingHpRatesOnWins.B`
 - `drawRate`
 - `averageRounds`
 - `minRounds`
 - `maxRounds`
+- `averageDurationMs`
+- `minDurationMs`
+- `maxDurationMs`
 
-如有必要再追加：
-
-- `averageSurvivors.A`
-- `averageSurvivors.B`
-- `averageRemainingHpRatio.A`
-- `averageRemainingHpRatio.B`
-
-第一版不默认加入更多字段，遵循 YAGNI。
+当前不会返回完整事件流，仍遵循 “摘要结果独立于单场结果模型” 的边界。
 
 ## Seed 策略
 
@@ -146,6 +146,21 @@
 3. 同一输入和同一 `baseSeed` 下，多次运行结果完全一致。
 4. 前端本地模式与后端 API 模式返回相同摘要。
 5. 页面结构清晰，不出现单场控件与多场统计控件混杂堆叠。
+
+## 当前落地补充
+
+- 前端结果区已支持 `单场模拟 / 多场统计` 切换。
+- 前端本地模式与后端 API 模式都支持批量统计。
+- 导出结果时：
+  - 单场模式导出 `battle-result.json`
+  - 多场统计导出 `battle-batch-summary.json`
+- 摘要结果当前重点展示：
+  - 胜场与胜率
+  - 平局与平局率
+  - 回合制模式下的平均/最短/最长回合
+  - 即时制模式下的平均/最短/最长完成时间
+  - 终局净优势
+  - 胜利时平均剩余血量比例
 
 ## 进度记录
 

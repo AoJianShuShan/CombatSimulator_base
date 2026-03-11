@@ -72,6 +72,18 @@ function getEffectiveDefense(stats) {
   return getScaledStat(stats[unitStatRoleKeys.defenseBase], stats[unitStatRoleKeys.defenseRate]);
 }
 
+function getFireIntervalMs(stats) {
+  return roundToFour(60000 / Math.max(1, stats[unitStatRoleKeys.fireRate]));
+}
+
+function getReloadTimeMs(stats) {
+  return Math.max(0, stats[unitStatRoleKeys.reloadTimeMs]);
+}
+
+function getMagazineCapacity(stats) {
+  return Math.max(1, Math.trunc(stats[unitStatRoleKeys.magazineCapacity]));
+}
+
 function getArmorReductionRate(input, actor, target) {
   const armorGap = Math.max(0, target.stats[unitStatRoleKeys.armor] - actor.stats[unitStatRoleKeys.armorPenetration]);
   if (armorGap <= 0) {
@@ -365,6 +377,14 @@ function computeExpectedFirstAction(input) {
     : null;
   const targetMaxHp = getEffectiveMaxHp(target.stats);
   const targetHpAfter = damage == null ? null : Math.max(0, targetMaxHp - damage);
+  const fireIntervalMs = getFireIntervalMs(actor.stats);
+  const magazineCapacity = getMagazineCapacity(actor.stats);
+  const remainingAmmoAfterFirstShot = Math.max(0, magazineCapacity - 1);
+  const reloadStartedAtMs = remainingAmmoAfterFirstShot === 0 ? 0 : null;
+  const reloadCompletedAtMs = remainingAmmoAfterFirstShot === 0 ? getReloadTimeMs(actor.stats) : null;
+  const nextAttackTimeMs = fireIntervalMs;
+  const secondTurnTimelineMs =
+    remainingAmmoAfterFirstShot === 0 ? Math.max(fireIntervalMs, getReloadTimeMs(actor.stats)) : fireIntervalMs;
 
   return {
     armorGap: Math.max(0, target.stats[unitStatRoleKeys.armor] - actor.stats[unitStatRoleKeys.armorPenetration]),
@@ -389,7 +409,13 @@ function computeExpectedFirstAction(input) {
     isMinimumDamageByDefense: effectiveAttack - effectiveDefense < input.battle.minimumDamage,
     outcome: hitDeterministic === false ? "未命中" : hitDeterministic === true ? "命中" : "不确定",
     outputMultiplier,
+    currentAmmoBeforeFirstShot: magazineCapacity,
+    magazineCapacity,
+    nextAttackTimeMs,
+    reloadCompletedAtMs,
+    reloadStartedAtMs,
     scenarioMultiplier,
+    secondTurnTimelineMs,
     skillMultiplier,
     skillTypeMultiplier,
     targetHpAfter,
@@ -405,6 +431,9 @@ function collectActualFirstAction(input, result) {
   const missEvent = firstResolutionEvent?.type === "attack_missed" ? firstResolutionEvent : null;
   const damageEvent = firstResolutionEvent?.type === "damage_applied" ? firstResolutionEvent : null;
   const focusActorTurnIndex = turnEvents.findIndex((event) => event.actorId === ACTOR_ID);
+  const actorTurnEvents = turnEvents.filter((event) => event.actorId === ACTOR_ID);
+  const reloadStartedEvent = result.events.find((event) => event.type === "reload_started" && event.actorId === ACTOR_ID) ?? null;
+  const reloadCompletedEvent = result.events.find((event) => event.type === "reload_completed" && event.actorId === ACTOR_ID) ?? null;
 
   return {
     ...expected,
@@ -444,6 +473,10 @@ function collectActualFirstAction(input, result) {
         : expected.finalDamageMultiplier,
     firstTurnActorId: turnEvents[0]?.actorId ?? expected.firstTurnActorId,
     focusActorTurnIndex: focusActorTurnIndex >= 0 ? focusActorTurnIndex + 1 : expected.focusActorTurnIndex,
+    currentAmmoBeforeFirstShot:
+      typeof actorTurnEvents[0]?.payload?.currentAmmo === "number"
+        ? actorTurnEvents[0].payload.currentAmmo
+        : expected.currentAmmoBeforeFirstShot,
     headshotMultiplier:
       typeof damageEvent?.payload?.headshotMultiplier === "number"
         ? damageEvent.payload.headshotMultiplier / 100
@@ -460,15 +493,35 @@ function collectActualFirstAction(input, result) {
       typeof damageEvent?.payload?.isMinimumDamageByDefense === "boolean"
         ? damageEvent.payload.isMinimumDamageByDefense
         : expected.isMinimumDamageByDefense,
+    magazineCapacity:
+      typeof actorTurnEvents[0]?.payload?.magazineCapacity === "number"
+        ? actorTurnEvents[0].payload.magazineCapacity
+        : expected.magazineCapacity,
+    nextAttackTimeMs:
+      typeof reloadStartedEvent?.payload?.nextAttackTimeMs === "number"
+        ? reloadStartedEvent.payload.nextAttackTimeMs
+        : expected.nextAttackTimeMs,
     outcome: damageEvent ? "命中" : missEvent ? "未命中" : "无结果",
     outputMultiplier:
       typeof damageEvent?.payload?.outputMultiplier === "number"
         ? damageEvent.payload.outputMultiplier / 100
         : expected.outputMultiplier,
+    reloadCompletedAtMs:
+      typeof reloadCompletedEvent?.payload?.timelineMs === "number"
+        ? reloadCompletedEvent.payload.timelineMs
+        : expected.reloadCompletedAtMs,
+    reloadStartedAtMs:
+      typeof reloadStartedEvent?.payload?.timelineMs === "number"
+        ? reloadStartedEvent.payload.timelineMs
+        : expected.reloadStartedAtMs,
     scenarioMultiplier:
       typeof damageEvent?.payload?.scenarioMultiplier === "number"
         ? damageEvent.payload.scenarioMultiplier / 100
         : expected.scenarioMultiplier,
+    secondTurnTimelineMs:
+      typeof actorTurnEvents[1]?.payload?.timelineMs === "number"
+        ? actorTurnEvents[1].payload.timelineMs
+        : expected.secondTurnTimelineMs,
     skillMultiplier:
       typeof damageEvent?.payload?.skillMultiplier === "number"
         ? damageEvent.payload.skillMultiplier / 100
@@ -500,14 +553,20 @@ function normalizeForComparison(snapshot) {
     finalDamageMultiplier: snapshot.finalDamageMultiplier == null ? null : roundToFour(snapshot.finalDamageMultiplier),
     firstTurnActorId: snapshot.firstTurnActorId ?? null,
     focusActorTurnIndex: snapshot.focusActorTurnIndex ?? null,
+    currentAmmoBeforeFirstShot: snapshot.currentAmmoBeforeFirstShot ?? null,
     headshotMultiplier: snapshot.headshotMultiplier == null ? null : roundToFour(snapshot.headshotMultiplier),
     heroClassMultiplier: snapshot.heroClassMultiplier == null ? null : roundToFour(snapshot.heroClassMultiplier),
     isCritical: snapshot.isCritical ?? null,
     isHeadshot: snapshot.isHeadshot ?? null,
     isMinimumDamageByDefense: snapshot.isMinimumDamageByDefense ?? null,
+    magazineCapacity: snapshot.magazineCapacity ?? null,
+    nextAttackTimeMs: snapshot.nextAttackTimeMs == null ? null : roundToFour(snapshot.nextAttackTimeMs),
     outcome: snapshot.outcome ?? null,
     outputMultiplier: snapshot.outputMultiplier == null ? null : roundToFour(snapshot.outputMultiplier),
+    reloadCompletedAtMs: snapshot.reloadCompletedAtMs == null ? null : roundToFour(snapshot.reloadCompletedAtMs),
+    reloadStartedAtMs: snapshot.reloadStartedAtMs == null ? null : roundToFour(snapshot.reloadStartedAtMs),
     scenarioMultiplier: snapshot.scenarioMultiplier == null ? null : roundToFour(snapshot.scenarioMultiplier),
+    secondTurnTimelineMs: snapshot.secondTurnTimelineMs == null ? null : roundToFour(snapshot.secondTurnTimelineMs),
     skillMultiplier: snapshot.skillMultiplier == null ? null : roundToFour(snapshot.skillMultiplier),
     skillTypeMultiplier: snapshot.skillTypeMultiplier == null ? null : roundToFour(snapshot.skillTypeMultiplier),
     targetHpAfter: snapshot.targetHpAfter ?? null,
@@ -598,6 +657,24 @@ const inspectSpeed = (snapshot) => ({
   首次结果: snapshot.outcome,
 });
 
+const inspectFireRate = (snapshot) => ({
+  射击间隔ms: snapshot.nextAttackTimeMs,
+  第二次出手时间ms: snapshot.secondTurnTimelineMs,
+});
+
+const inspectReloadTime = (snapshot) => ({
+  换弹开始时间ms: snapshot.reloadStartedAtMs,
+  换弹完成时间ms: snapshot.reloadCompletedAtMs,
+  第二次出手时间ms: snapshot.secondTurnTimelineMs,
+});
+
+const inspectMagazineCapacity = (snapshot) => ({
+  首次开火前弹药: snapshot.currentAmmoBeforeFirstShot,
+  弹匣容量: snapshot.magazineCapacity,
+  换弹开始时间ms: snapshot.reloadStartedAtMs,
+  第二次出手时间ms: snapshot.secondTurnTimelineMs,
+});
+
 const inspectCrit = (snapshot) => ({
   是否暴击: snapshot.isCritical,
   暴击倍率: formatRatioPercent(snapshot.criticalMultiplier),
@@ -672,6 +749,39 @@ const auditCases = [
     inspect: inspectSpeed,
     targetStats: { speed: 10 },
     expect: (before, after) => before.firstTurnActorId === TARGET_ID && after.firstTurnActorId === ACTOR_ID,
+  }),
+  makeStatCase({
+    key: "fireRate",
+    label: "射速（发/min）",
+    side: "actor",
+    before: 60,
+    after: 120,
+    battle: { maxRounds: 2, actionResolutionMode: "arpgSimultaneous" },
+    actorStats: { magazineCapacity: 30, reloadTimeMs: 1200 },
+    inspect: inspectFireRate,
+    expect: (before, after) => after.nextAttackTimeMs < before.nextAttackTimeMs && after.secondTurnTimelineMs < before.secondTurnTimelineMs,
+  }),
+  makeStatCase({
+    key: "reloadTimeMs",
+    label: "换弹动作时间（ms）",
+    side: "actor",
+    before: 1200,
+    after: 800,
+    battle: { maxRounds: 2, actionResolutionMode: "arpgSimultaneous" },
+    actorStats: { fireRate: 120, magazineCapacity: 1 },
+    inspect: inspectReloadTime,
+    expect: (before, after) => after.reloadCompletedAtMs < before.reloadCompletedAtMs && after.secondTurnTimelineMs < before.secondTurnTimelineMs,
+  }),
+  makeStatCase({
+    key: "magazineCapacity",
+    label: "弹匣最大容量（发）",
+    side: "actor",
+    before: 1,
+    after: 3,
+    battle: { maxRounds: 2, actionResolutionMode: "arpgSimultaneous" },
+    actorStats: { fireRate: 120, reloadTimeMs: 1200 },
+    inspect: inspectMagazineCapacity,
+    expect: (before, after) => before.reloadStartedAtMs === 0 && after.reloadStartedAtMs == null && after.secondTurnTimelineMs < before.secondTurnTimelineMs,
   }),
   makeStatCase({ key: "critChance", label: "暴击率%", side: "actor", before: 0, after: 100, inspect: inspectCrit, expect: (before, after) => before.isCritical === false && after.isCritical === true }),
   makeStatCase({

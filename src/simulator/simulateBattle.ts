@@ -14,7 +14,10 @@ import { unitStatRoleKeys } from "../domain/attributeMacros.ts";
 import type { TargetingStrategy, UnitStats } from "../domain/battle.ts";
 
 interface RuntimeUnit extends BattleUnitState {
+  currentAmmo: number;
   initialOrder: number;
+  nextAttackTimeMs: number;
+  reloadUntilMs: number | null;
 }
 
 interface SeededRandom {
@@ -62,6 +65,21 @@ interface AttackDamageResolution extends AttackResolutionBase {
 }
 
 type AttackResolution = AttackMissResolution | AttackDamageResolution;
+type BattleEndReason = "teamEliminated" | "maxRounds" | "maxBattleTimeMs";
+
+interface TimelineWindowContext {
+  events: BattleEvent[];
+  input: BattleInput;
+  random: SeededRandom;
+  round: number;
+  timelineMs: number;
+  units: RuntimeUnit[];
+}
+
+type TimelineDriver = (context: TimelineWindowContext) => void;
+
+const EPSILON = 1e-6;
+const FIRE_INTERVAL_BASE_MS = 60000;
 
 const unitPositionPriority: Record<UnitPosition, number> = {
   front: 0,
@@ -87,6 +105,18 @@ function roundHalfUp(value: number) {
   return Math.floor(value + 0.5);
 }
 
+function roundToTwoDecimals(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function roundToFourDecimals(value: number) {
+  return Math.round(value * 10000) / 10000;
+}
+
+function normalizeTimelineValue(value: number) {
+  return roundToFourDecimals(value);
+}
+
 function clampPercentage(value: number) {
   return Math.min(100, Math.max(0, value));
 }
@@ -95,8 +125,8 @@ function clampMultiplier(value: number) {
   return Math.max(0, value);
 }
 
-function roundToTwoDecimals(value: number) {
-  return Math.round(value * 100) / 100;
+function isTimelineReached(current: number, target: number) {
+  return current + EPSILON >= target;
 }
 
 function getScaledStat(baseValue: number, rate: number) {
@@ -113,6 +143,18 @@ function getEffectiveAttack(stats: UnitStats) {
 
 function getEffectiveDefense(stats: UnitStats) {
   return getScaledStat(stats[unitStatRoleKeys.defenseBase], stats[unitStatRoleKeys.defenseRate]);
+}
+
+function getMagazineCapacity(stats: UnitStats) {
+  return Math.max(1, Math.trunc(stats[unitStatRoleKeys.magazineCapacity]));
+}
+
+function getReloadTimeMs(stats: UnitStats) {
+  return Math.max(0, stats[unitStatRoleKeys.reloadTimeMs]);
+}
+
+function getFireIntervalMs(stats: UnitStats) {
+  return normalizeTimelineValue(FIRE_INTERVAL_BASE_MS / Math.max(1, stats[unitStatRoleKeys.fireRate]));
 }
 
 function getArmorReductionRate(input: BattleInput, actor: RuntimeUnit, target: RuntimeUnit) {
@@ -185,6 +227,9 @@ function cloneUnit(unit: UnitConfig, initialOrder: number): RuntimeUnit {
     ...unit,
     currentHp: getEffectiveMaxHp(unit.stats),
     isAlive: true,
+    currentAmmo: getMagazineCapacity(unit.stats),
+    nextAttackTimeMs: 0,
+    reloadUntilMs: null,
     initialOrder,
   };
 }
@@ -217,25 +262,23 @@ function compareByInitialTargetPriority(left: RuntimeUnit, right: RuntimeUnit) {
 }
 
 function sortTurnOrder(units: RuntimeUnit[]) {
-  return [...units]
-    .filter((unit) => unit.isAlive)
-    .sort((left, right) => {
-      const leftSpeed = left.stats[unitStatRoleKeys.speed];
-      const rightSpeed = right.stats[unitStatRoleKeys.speed];
-      if (leftSpeed !== rightSpeed) {
-        return rightSpeed - leftSpeed;
-      }
+  return [...units].sort((left, right) => {
+    const leftSpeed = left.stats[unitStatRoleKeys.speed];
+    const rightSpeed = right.stats[unitStatRoleKeys.speed];
+    if (leftSpeed !== rightSpeed) {
+      return rightSpeed - leftSpeed;
+    }
 
-      if (left.teamId !== right.teamId) {
-        return left.teamId.localeCompare(right.teamId);
-      }
+    if (left.teamId !== right.teamId) {
+      return left.teamId.localeCompare(right.teamId);
+    }
 
-      return left.initialOrder - right.initialOrder;
-    });
+    return left.initialOrder - right.initialOrder;
+  });
 }
 
-function getSimultaneousActionOrder(units: RuntimeUnit[]) {
-  return [...units].filter((unit) => unit.isAlive).sort((left, right) => left.initialOrder - right.initialOrder);
+function sortSnapshotActionOrder(units: RuntimeUnit[]) {
+  return [...units].sort((left, right) => left.initialOrder - right.initialOrder);
 }
 
 function pickTarget(units: RuntimeUnit[], actor: RuntimeUnit, targetingStrategy: TargetingStrategy) {
@@ -268,10 +311,7 @@ function pickTarget(units: RuntimeUnit[], actor: RuntimeUnit, targetingStrategy:
   }
 }
 
-function createEvent(
-  events: BattleEvent[],
-  event: Omit<BattleEvent, "sequence">,
-) {
+function createEvent(events: BattleEvent[], event: Omit<BattleEvent, "sequence">) {
   events.push({
     sequence: events.length + 1,
     timeIndex: events.length,
@@ -374,7 +414,34 @@ function resolveAttack(
   };
 }
 
-function createAttackMissEvent(events: BattleEvent[], round: number, resolution: AttackMissResolution) {
+function createTurnStartedEvent(
+  events: BattleEvent[],
+  round: number,
+  timelineMs: number,
+  actor: RuntimeUnit,
+  target: RuntimeUnit,
+) {
+  createEvent(events, {
+    type: "turn_started",
+    round,
+    actorId: actor.id,
+    targetId: target.id,
+    summary: `${actor.name} 对 ${target.name} 发起攻击`,
+    payload: {
+      timelineMs,
+      fireRate: roundToTwoDecimals(Math.max(1, actor.stats[unitStatRoleKeys.fireRate])),
+      currentAmmo: actor.currentAmmo,
+      magazineCapacity: getMagazineCapacity(actor.stats),
+    },
+  });
+}
+
+function createAttackMissEvent(
+  events: BattleEvent[],
+  round: number,
+  timelineMs: number,
+  resolution: AttackMissResolution,
+) {
   createEvent(events, {
     type: "attack_missed",
     round,
@@ -382,6 +449,7 @@ function createAttackMissEvent(events: BattleEvent[], round: number, resolution:
     targetId: resolution.targetId,
     summary: `${resolution.actorName} 攻击 ${resolution.targetName}，但被闪避或未命中`,
     payload: {
+      timelineMs,
       hitChance: resolution.effectiveHitChance,
     },
   });
@@ -390,6 +458,7 @@ function createAttackMissEvent(events: BattleEvent[], round: number, resolution:
 function createDamageAppliedEvent(
   events: BattleEvent[],
   round: number,
+  timelineMs: number,
   resolution: AttackDamageResolution,
   targetCurrentHp: number,
 ) {
@@ -402,6 +471,7 @@ function createDamageAppliedEvent(
     targetId: resolution.targetId,
     summary: `${resolution.actorName} 对 ${resolution.targetName} 造成 ${resolution.damage} 点${damageTags}伤害，目标剩余 ${targetCurrentHp}/${resolution.targetMaxHp} HP${resolution.isMinimumDamageByDefense ? "（不破防）" : ""}`,
     payload: {
+      timelineMs,
       damage: resolution.damage,
       baseDamage: resolution.baseDamage,
       targetHp: targetCurrentHp,
@@ -430,26 +500,144 @@ function createDamageAppliedEvent(
   });
 }
 
-function createUnitDefeatedEvent(events: BattleEvent[], round: number, target: RuntimeUnit, actorId?: string) {
+function createReloadStartedEvent(events: BattleEvent[], round: number, timelineMs: number, actor: RuntimeUnit) {
+  createEvent(events, {
+    type: "reload_started",
+    round,
+    actorId: actor.id,
+    summary: `${actor.name} 开始换弹`,
+    payload: {
+      timelineMs,
+      fireRate: roundToTwoDecimals(Math.max(1, actor.stats[unitStatRoleKeys.fireRate])),
+      currentAmmo: actor.currentAmmo,
+      magazineCapacity: getMagazineCapacity(actor.stats),
+      reloadTimeMs: roundToTwoDecimals(getReloadTimeMs(actor.stats)),
+      reloadUntilMs: actor.reloadUntilMs,
+      nextAttackTimeMs: actor.nextAttackTimeMs,
+    },
+  });
+}
+
+function createReloadCompletedEvent(events: BattleEvent[], round: number, timelineMs: number, actor: RuntimeUnit) {
+  createEvent(events, {
+    type: "reload_completed",
+    round,
+    actorId: actor.id,
+    summary: `${actor.name} 完成换弹`,
+    payload: {
+      timelineMs,
+      fireRate: roundToTwoDecimals(Math.max(1, actor.stats[unitStatRoleKeys.fireRate])),
+      currentAmmo: actor.currentAmmo,
+      magazineCapacity: getMagazineCapacity(actor.stats),
+      nextAttackTimeMs: actor.nextAttackTimeMs,
+    },
+  });
+}
+
+function createUnitDefeatedEvent(
+  events: BattleEvent[],
+  round: number,
+  timelineMs: number,
+  target: RuntimeUnit,
+  actorId?: string,
+) {
   createEvent(events, {
     type: "unit_defeated",
     round,
     actorId,
     targetId: target.id,
     summary: `${target.name} 被击败`,
+    payload: {
+      timelineMs,
+      targetHp: target.currentHp,
+    },
   });
 }
 
-function runSequentialRound(
-  input: BattleInput,
+function getNextTimelineTime(units: RuntimeUnit[]) {
+  let nextTimeline: number | null = null;
+
+  for (const unit of units) {
+    if (!unit.isAlive) {
+      continue;
+    }
+
+    const candidate =
+      unit.currentAmmo <= 0 && unit.reloadUntilMs !== null
+        ? unit.reloadUntilMs
+        : unit.nextAttackTimeMs;
+
+    if (nextTimeline === null || candidate < nextTimeline - EPSILON) {
+      nextTimeline = candidate;
+    }
+  }
+
+  return nextTimeline === null ? null : normalizeTimelineValue(nextTimeline);
+}
+
+function completeReloadsAtTime(
   units: RuntimeUnit[],
   events: BattleEvent[],
   round: number,
-  random: SeededRandom,
+  timelineMs: number,
 ) {
-  const turnOrder = sortTurnOrder(units);
-  for (const actor of turnOrder) {
-    if (!actor.isAlive) {
+  const reloadingUnits = units
+    .filter(
+      (unit) =>
+        unit.isAlive &&
+        unit.currentAmmo <= 0 &&
+        unit.reloadUntilMs !== null &&
+        isTimelineReached(timelineMs, unit.reloadUntilMs),
+    )
+    .sort((left, right) => left.initialOrder - right.initialOrder);
+
+  for (const unit of reloadingUnits) {
+    unit.currentAmmo = getMagazineCapacity(unit.stats);
+    unit.reloadUntilMs = null;
+    createReloadCompletedEvent(events, round, timelineMs, unit);
+  }
+}
+
+function getReadyAttackUnitsAtTime(units: RuntimeUnit[], timelineMs: number) {
+  return units.filter(
+    (unit) => unit.isAlive && unit.currentAmmo > 0 && isTimelineReached(timelineMs, unit.nextAttackTimeMs),
+  );
+}
+
+function consumeAmmoAndSchedule(
+  actor: RuntimeUnit,
+  timelineMs: number,
+  events: BattleEvent[],
+  round: number,
+  emitReloadStartedEvent: boolean,
+) {
+  actor.currentAmmo = Math.max(0, actor.currentAmmo - 1);
+  actor.nextAttackTimeMs = normalizeTimelineValue(timelineMs + getFireIntervalMs(actor.stats));
+
+  if (actor.currentAmmo > 0) {
+    actor.reloadUntilMs = null;
+    return;
+  }
+
+  actor.reloadUntilMs = normalizeTimelineValue(timelineMs + getReloadTimeMs(actor.stats));
+  if (emitReloadStartedEvent) {
+    createReloadStartedEvent(events, round, timelineMs, actor);
+  }
+}
+
+function runTurnBasedTimelineWindow({
+  events,
+  input,
+  random,
+  round,
+  timelineMs,
+  units,
+}: TimelineWindowContext) {
+  const turnOrder = sortTurnOrder(getReadyAttackUnitsAtTime(units, timelineMs));
+
+  for (const turnUnit of turnOrder) {
+    const actor = units.find((unit) => unit.id === turnUnit.id) ?? null;
+    if (!actor || !actor.isAlive || actor.currentAmmo <= 0 || !isTimelineReached(timelineMs, actor.nextAttackTimeMs)) {
       continue;
     }
 
@@ -458,27 +646,24 @@ function runSequentialRound(
       break;
     }
 
-    createEvent(events, {
-      type: "turn_started",
-      round,
-      actorId: actor.id,
-      targetId: target.id,
-      summary: `${actor.name} 对 ${target.name} 发起攻击`,
-    });
-
+    createTurnStartedEvent(events, round, timelineMs, actor, target);
     const resolution = resolveAttack(input, random, actor, target);
+
     if (resolution.type === "miss") {
-      createAttackMissEvent(events, round, resolution);
+      createAttackMissEvent(events, round, timelineMs, resolution);
+      consumeAmmoAndSchedule(actor, timelineMs, events, round, true);
       continue;
     }
 
     target.currentHp = Math.max(0, target.currentHp - resolution.damage);
     target.isAlive = target.currentHp > 0;
-    createDamageAppliedEvent(events, round, resolution, target.currentHp);
+    createDamageAppliedEvent(events, round, timelineMs, resolution, target.currentHp);
 
     if (!target.isAlive) {
-      createUnitDefeatedEvent(events, round, target, resolution.actorId);
+      createUnitDefeatedEvent(events, round, timelineMs, target, resolution.actorId);
     }
+
+    consumeAmmoAndSchedule(actor, timelineMs, events, round, true);
 
     const remainingEnemies = getAliveUnitsByTeam(units, getOpponentTeamId(actor.teamId));
     if (remainingEnemies.length === 0) {
@@ -487,15 +672,16 @@ function runSequentialRound(
   }
 }
 
-function runSimultaneousRound(
-  input: BattleInput,
-  units: RuntimeUnit[],
-  events: BattleEvent[],
-  round: number,
-  random: SeededRandom,
-) {
+function runSimultaneousTimelineWindow({
+  events,
+  input,
+  random,
+  round,
+  timelineMs,
+  units,
+}: TimelineWindowContext) {
   const snapshotUnits = units.map(cloneRuntimeUnit);
-  const actionOrder = getSimultaneousActionOrder(snapshotUnits);
+  const actionOrder = sortSnapshotActionOrder(getReadyAttackUnitsAtTime(snapshotUnits, timelineMs));
   const resolutions: AttackResolution[] = [];
 
   for (const actor of actionOrder) {
@@ -504,13 +690,7 @@ function runSimultaneousRound(
       continue;
     }
 
-    createEvent(events, {
-      type: "turn_started",
-      round,
-      actorId: actor.id,
-      targetId: target.id,
-      summary: `${actor.name} 对 ${target.name} 发起攻击`,
-    });
+    createTurnStartedEvent(events, round, timelineMs, actor, target);
     resolutions.push(resolveAttack(input, random, actor, target));
   }
 
@@ -519,7 +699,7 @@ function runSimultaneousRound(
 
   for (const resolution of resolutions) {
     if (resolution.type === "miss") {
-      createAttackMissEvent(events, round, resolution);
+      createAttackMissEvent(events, round, timelineMs, resolution);
       continue;
     }
 
@@ -530,7 +710,7 @@ function runSimultaneousRound(
 
     target.currentHp = Math.max(0, target.currentHp - resolution.damage);
     target.isAlive = target.currentHp > 0;
-    createDamageAppliedEvent(events, round, resolution, target.currentHp);
+    createDamageAppliedEvent(events, round, timelineMs, resolution, target.currentHp);
 
     if (!target.isAlive && !defeatedIds.has(target.id)) {
       defeatedIds.add(target.id);
@@ -544,30 +724,30 @@ function runSimultaneousRound(
       continue;
     }
 
-    createUnitDefeatedEvent(events, round, target);
+    createUnitDefeatedEvent(events, round, timelineMs, target);
+  }
+
+  for (const actor of actionOrder) {
+    const actualActor = units.find((unit) => unit.id === actor.id);
+    if (!actualActor) {
+      continue;
+    }
+
+    consumeAmmoAndSchedule(actualActor, timelineMs, events, round, actualActor.isAlive);
   }
 }
 
-function resolveRoundByMode(
-  actionResolutionMode: ActionResolutionMode,
-  input: BattleInput,
-  units: RuntimeUnit[],
-  events: BattleEvent[],
-  round: number,
-  random: SeededRandom,
-) {
-  if (actionResolutionMode === "arpgSimultaneous") {
-    runSimultaneousRound(input, units, events, round, random);
-    return;
-  }
-
-  runSequentialRound(input, units, events, round, random);
-}
+const timelineDrivers: Record<ActionResolutionMode, TimelineDriver> = {
+  arpgSimultaneous: runSimultaneousTimelineWindow,
+  turnBasedSpeed: runTurnBasedTimelineWindow,
+};
 
 export function simulateBattle(input: BattleInput): BattleSimulationResult {
   const units = input.units.map((unit, index) => cloneUnit(unit, index));
   const events: BattleEvent[] = [];
   let roundsCompleted = 0;
+  let lastTimelineMs = 0;
+  let endReason: BattleEndReason = "teamEliminated";
   const random = createSeededRandom(input.battle.randomSeed);
 
   createEvent(events, {
@@ -576,49 +756,84 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
     summary: `${input.battle.teamNames.A} 与 ${input.battle.teamNames.B} 的战斗开始`,
     payload: {
       actionResolutionMode: input.battle.actionResolutionMode,
+      maxBattleTimeMs: input.battle.maxBattleTimeMs,
       maxRounds: input.battle.maxRounds,
+      timelineMs: 0,
       unitCount: units.length,
     },
   });
 
-  for (let round = 1; round <= input.battle.maxRounds; round += 1) {
+  while (roundsCompleted < input.battle.maxRounds) {
     const teamAAlive = getAliveUnitsByTeam(units, "A");
     const teamBAlive = getAliveUnitsByTeam(units, "B");
     if (teamAAlive.length === 0 || teamBAlive.length === 0) {
+      endReason = "teamEliminated";
       break;
     }
 
-    roundsCompleted = round;
+    const timelineMs = getNextTimelineTime(units);
+    if (timelineMs === null) {
+      endReason = "teamEliminated";
+      break;
+    }
+
+    if (timelineMs > input.battle.maxBattleTimeMs) {
+      endReason = "maxBattleTimeMs";
+      break;
+    }
+
+    roundsCompleted += 1;
+    lastTimelineMs = timelineMs;
+
     createEvent(events, {
       type: "round_started",
-      round,
-      summary: `第 ${round} 回合开始`,
+      round: roundsCompleted,
+      summary: `第 ${roundsCompleted} 回合开始`,
       payload: {
         actionResolutionMode: input.battle.actionResolutionMode,
         aliveA: teamAAlive.length,
         aliveB: teamBAlive.length,
+        timelineMs,
       },
     });
 
-    resolveRoundByMode(input.battle.actionResolutionMode, input, units, events, round, random);
+    completeReloadsAtTime(units, events, roundsCompleted, timelineMs);
+    timelineDrivers[input.battle.actionResolutionMode]({
+      events,
+      input,
+      random,
+      round: roundsCompleted,
+      timelineMs,
+      units,
+    });
   }
 
   const aliveA = getAliveUnitsByTeam(units, "A");
   const aliveB = getAliveUnitsByTeam(units, "B");
   const winnerTeamId = aliveA.length > 0 && aliveB.length === 0 ? "A" : aliveB.length > 0 && aliveA.length === 0 ? "B" : null;
+  if (winnerTeamId === null && endReason !== "maxBattleTimeMs") {
+    endReason = roundsCompleted >= input.battle.maxRounds ? "maxRounds" : "teamEliminated";
+  }
 
   createEvent(events, {
     type: "battle_ended",
     round: roundsCompleted,
     summary:
       winnerTeamId === null
-        ? "战斗结束，结果为平局"
+        ? endReason === "maxBattleTimeMs"
+          ? "战斗结束，达到最大战斗时长，结果按平局处理"
+          : endReason === "maxRounds"
+            ? "战斗结束，达到最大回合数，结果按平局处理"
+            : "战斗结束，结果为平局"
         : `战斗结束，${input.battle.teamNames[winnerTeamId]}胜利！`,
     payload: {
       actionResolutionMode: input.battle.actionResolutionMode,
       winnerTeamId,
       aliveA: aliveA.length,
       aliveB: aliveB.length,
+      endReason,
+      maxBattleTimeMs: input.battle.maxBattleTimeMs,
+      timelineMs: lastTimelineMs,
     },
   });
 

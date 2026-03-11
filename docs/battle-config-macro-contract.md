@@ -9,6 +9,7 @@
 - `battle` 下所有“数值型、可编辑、可校验”的参数，统一归 `battle-config-macros.json`
 - 当前已纳入：
   - `maxRounds`
+  - `maxBattleTimeMs`
   - `minimumDamage`
   - `armorFormulaBase`
   - `maxArmorDamageReduction`

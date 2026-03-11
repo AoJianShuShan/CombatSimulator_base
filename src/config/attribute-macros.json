@@ -58,6 +58,30 @@
       "role": "speed"
     },
     {
+      "key": "fireRate",
+      "label": "射速（发/min）",
+      "default": 60,
+      "min": 1,
+      "step": 1,
+      "role": "fireRate"
+    },
+    {
+      "key": "reloadTimeMs",
+      "label": "换弹动作时间（ms）",
+      "default": 1200,
+      "min": 1,
+      "step": 1,
+      "role": "reloadTimeMs"
+    },
+    {
+      "key": "magazineCapacity",
+      "label": "弹匣最大容量（发）",
+      "default": 30,
+      "min": 1,
+      "step": 1,
+      "role": "magazineCapacity"
+    },
+    {
       "key": "critChance",
       "label": "暴击率%",
       "default": 0,

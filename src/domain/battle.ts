@@ -34,7 +34,7 @@ export const protectionTypeLabels: Record<ProtectionType, string> = {
 export const protectionTypeOrder: ProtectionType[] = ["none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"];
 
 export const actionResolutionModeLabels: Record<ActionResolutionMode, string> = {
-  arpgSimultaneous: "Arpg同时出手",
+  arpgSimultaneous: "Arpg即时制（时间）",
   turnBasedSpeed: "回合制速度高者先手",
 };
 export const actionResolutionModeOrder: ActionResolutionMode[] = ["arpgSimultaneous", "turnBasedSpeed"];
@@ -47,6 +47,9 @@ export interface UnitStats {
   defense: number;
   defenseRate: number;
   speed: number;
+  fireRate: number;
+  reloadTimeMs: number;
+  magazineCapacity: number;
   critChance: number;
   critMultiplier: number;
   hitChance: number;
@@ -80,6 +83,7 @@ export interface UnitConfig {
 
 export interface BattleConfig {
   maxRounds: number;
+  maxBattleTimeMs: number;
   minimumDamage: number;
   randomSeed: number;
   targetingStrategy: TargetingStrategy;
@@ -105,6 +109,9 @@ export interface BattleBatchRequest {
 export interface BattleUnitState extends UnitConfig {
   currentHp: number;
   isAlive: boolean;
+  currentAmmo?: number;
+  nextAttackTimeMs?: number;
+  reloadUntilMs?: number | null;
 }
 
 export type BattleEventType =
@@ -113,12 +120,15 @@ export type BattleEventType =
   | "turn_started"
   | "attack_missed"
   | "damage_applied"
+  | "reload_started"
+  | "reload_completed"
   | "unit_defeated"
   | "battle_ended";
 
 export interface BattleEvent {
   sequence: number;
   timeIndex: number;
+  elapsedTimeMs: number;
   type: BattleEventType;
   round: number;
   actorId?: string;
@@ -147,6 +157,9 @@ export interface BattleBatchSummaryResult {
   averageRounds: number;
   minRounds: number;
   maxRounds: number;
+  averageDurationMs: number;
+  minDurationMs: number;
+  maxDurationMs: number;
 }
 
 export function createBattleRandomSeed() {

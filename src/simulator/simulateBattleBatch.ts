@@ -24,6 +24,11 @@ function getEffectiveMaxHp(unit: BattleInput["units"][number] | ReturnType<typeo
   return Math.max(1, Math.floor(stats.maxHp * (1 + stats.maxHpRate / 100) + 0.5));
 }
 
+function getBattleDurationMs(result: ReturnType<typeof simulateBattle>) {
+  const timelineMs = result.events.at(-1)?.payload?.timelineMs;
+  return typeof timelineMs === "number" ? timelineMs : 0;
+}
+
 export function simulateBattleBatchSummary(input: BattleInput, count: number): BattleBatchSummaryResult {
   const normalizedCount = Math.max(1, Math.trunc(count));
   const wins: Record<TeamId, number> = {
@@ -45,8 +50,11 @@ export function simulateBattleBatchSummary(input: BattleInput, count: number): B
   let totalTerminalNetAdvantageA = 0;
   let draws = 0;
   let totalRounds = 0;
+  let totalDurationMs = 0;
   let minRounds = Number.POSITIVE_INFINITY;
   let maxRounds = Number.NEGATIVE_INFINITY;
+  let minDurationMs = Number.POSITIVE_INFINITY;
+  let maxDurationMs = Number.NEGATIVE_INFINITY;
 
   for (let index = 0; index < normalizedCount; index += 1) {
     const battleSeed = deriveBattleSeed(input.battle.randomSeed, index);
@@ -59,8 +67,12 @@ export function simulateBattleBatchSummary(input: BattleInput, count: number): B
     });
 
     totalRounds += result.roundsCompleted;
+    const durationMs = getBattleDurationMs(result);
+    totalDurationMs += durationMs;
     minRounds = Math.min(minRounds, result.roundsCompleted);
     maxRounds = Math.max(maxRounds, result.roundsCompleted);
+    minDurationMs = Math.min(minDurationMs, durationMs);
+    maxDurationMs = Math.max(maxDurationMs, durationMs);
     const remainingHpByTeam: Record<TeamId, number> = {
       A: result.finalUnits.filter((unit) => unit.teamId === "A").reduce((sum, unit) => sum + unit.currentHp, 0),
       B: result.finalUnits.filter((unit) => unit.teamId === "B").reduce((sum, unit) => sum + unit.currentHp, 0),
@@ -102,5 +114,8 @@ export function simulateBattleBatchSummary(input: BattleInput, count: number): B
     averageRounds: roundToFourDecimals(totalRounds / normalizedCount),
     minRounds: Number.isFinite(minRounds) ? minRounds : 0,
     maxRounds: Number.isFinite(maxRounds) ? maxRounds : 0,
+    averageDurationMs: roundToFourDecimals(totalDurationMs / normalizedCount),
+    minDurationMs: Number.isFinite(minDurationMs) ? roundToFourDecimals(minDurationMs) : 0,
+    maxDurationMs: Number.isFinite(maxDurationMs) ? roundToFourDecimals(maxDurationMs) : 0,
   };
 }
