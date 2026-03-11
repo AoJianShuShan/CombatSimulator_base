@@ -1,40 +1,80 @@
 # 基础战斗模拟器
 
-一个零依赖的战斗模拟器骨架，当前包含：
+一个零依赖的战斗模拟器骨架，当前提供：
 
-- 前端 Web TypeScript：配置 N vs N 阵容、运行模拟、查看事件日志
-- 前端可用交互：刷新随机种子、逐事件回放、导出配置与结果 JSON
+- 前端 Web TypeScript：配置阵容、编辑单位、运行模拟、查看结果与事件日志
 - 前端本地模拟引擎：纯函数执行战斗，不依赖 UI
-- Python 后端：标准库 HTTP API，可在 WSL 或 Windows 启动
+- Python 后端：标准库 HTTP API，可在 WSL、Linux 或 Windows 启动
+- 本地构建、冒烟测试、属性审计脚本
+
+## 文档入口
+
+- [属性宏定义契约](./docs/attribute-macro-contract.md)
+- [整场战斗参数宏契约](./docs/battle-config-macro-contract.md)
+- [当前战斗规则说明](./docs/combat-rules.md)
+- [战斗伤害公式说明](./docs/damage-formula.md)
+
+## 当前能力
+
+- 配置整场战斗参数、阵容与单位属性
+- 以矩阵形式编辑前、中、后排编队，并支持拖拽调整同排顺序与跨排移动
+- 通过二级页面编辑单位属性详情，并查看只读的有效生命、有效攻击、有效防御
+- 支持导入配置 JSON、导出配置 JSON、导出模拟结果 JSON
+- 支持前端本地运行，或切换为调用后端 API
+- 固定 `randomSeed` 后重复运行，得到可复现的事件流
+- 结果页支持逐事件回放、日志模糊筛选、关键伤害高亮
 
 ## 重要约束
 
-- 新增属性或扩展属性算法前，必须先更新 [attribute-macros.json](/mnt/e/aiproj/基础战斗模拟器/src/config/attribute-macros.json)。
-- 前端 UI、默认值、本地模拟器、后端模拟器、测试与文档，必须复用同一份属性宏定义。
-- 详细约束见 [attribute-macro-contract.md](/mnt/e/aiproj/基础战斗模拟器/docs/attribute-macro-contract.md)。
+- 新增单位数值属性或扩展属性算法前，必须先更新 `src/config/attribute-macros.json`
+- 新增整场战斗数值参数前，必须先更新 `src/config/battle-config-macros.json`
+- 前端 UI、默认值、导入兼容、前后端校验、前端模拟器、后端模拟器、测试与文档，必须复用同一份定义
+- 当前“统一宏”覆盖的是数值类配置；`targetingStrategy`、`attackElement`、`protectionType` 这类枚举仍定义在领域模型中
 
 ## 运行
 
-### 前端构建
+### 给同事最快使用
+
+- 只想打开页面并直接模拟：双击项目根目录的 `start-local.bat`
+- 需要连后端 API 一起跑：双击项目根目录的 `start-fullstack.bat`
+- 两个脚本都会自动打开浏览器到 `http://127.0.0.1:4173`
+- `start-local.bat` 只需要 Node.js
+- `start-fullstack.bat` 需要 Node.js 和 Python 3
+
+### 前端开发服务器
+
+```bash
+npm run dev
+```
+
+默认监听 `http://127.0.0.1:4173`。
+
+### 前端构建与冒烟测试
 
 ```bash
 npm run build
 npm run smoke
 ```
 
+### 属性计算审计
+
+```bash
+node ./scripts/attribute-audit.mjs
+```
+
+这个脚本会固定其他属性，只改变单一变量，检查前后关键数值变化、边界保护和前后端一致性。
+
 ### 后端启动
 
 WSL / Linux:
 
 ```bash
-cd "/mnt/e/AIProJ/基础战斗模拟器"
-HOST=127.0.0.1 PORT=8000 "./scripts/run-backend.sh"
+HOST=127.0.0.1 PORT=8000 ./scripts/run-backend.sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-Set-Location "E:\AIProJ\基础战斗模拟器"
 $env:HOST = "127.0.0.1"
 $env:PORT = "8000"
 .\scripts\run-backend.ps1
@@ -42,56 +82,35 @@ $env:PORT = "8000"
 
 前端里将“模拟执行方式”切到“调用后端 API”，后端地址填 `http://127.0.0.1:8000` 即可。
 
-## 基础可用版能力
+## 当前战斗规则概览
 
-- 配置战斗参数、阵容与单位属性
-- 配置单位前、中、后排站位，并在页面上按矩阵查看编队
-- 在前端本地运行，或切换为调用后端 API
-- 固定 `randomSeed` 后重复运行，得到可复现的事件流
-- 基于 `timeIndex` 对事件逐步回放、播放、暂停和跳转
-- 导出当前配置 JSON 与模拟结果 JSON，便于复现和留档
-
-## 当前规则
-
-- 双方单位按速度从高到低行动
-- 每场战斗都带 `randomSeed`，前后端用同一种子驱动伪随机，保证可复现重播
-- 每个单位都带显式站位：前排、中排、后排
-- `前排优先` 策略会先攻击敌方前排；前排清空后再打中排，最后才打后排
-- 有效生命 / 攻击 / 防御：`固定值 * (1 + 百分比 / 100)`，结果取整后参与计算
+- 不使用行动条；每回合开始时，按速度从高到低排本回合行动顺序
+- 每个单位带显式站位：前排、中排、后排
+- `前排优先` 会按敌方前排 -> 中排 -> 后排选择目标，同排内再按初始编队顺序
+- 有效生命 / 攻击 / 防御：`固定值 * (1 + 百分比 / 100)`，结果按四舍五入取整
 - 命中判定：`max(0, min(100, 命中 - 闪避))`
-- 伤害公式：`max(最小伤害, 有效攻击 - 有效防御)`；暴击后再乘以暴击倍率
+- 伤害由基础伤害、护甲减伤、暴击、爆头、元素关系、技能倍率、各类增减伤乘区共同决定
 - 任一方全灭或达到最大回合数后结束
-- 每个事件都带稳定递增的 `timeIndex`，作为战斗内时间序号
-- 输出完整事件流：战斗开始、回合开始、单位行动、未命中、伤害、死亡、战斗结束
 
-## 目录
-
-```text
-backend/      Python HTTP 后端
-src/
-  domain/      领域模型
-  simulator/   战斗引擎
-  ui/          前端页面
-scripts/       本地 build / dev / smoke 脚本
-dist/          构建输出
-```
+详细公式与元素克制关系见 [当前战斗规则说明](./docs/combat-rules.md)。
 
 ## HTTP API
 
 - `GET /health`
 - `POST /simulate`
 
-`POST /simulate` 请求体对齐 [battle.ts](/mnt/e/AIProJ/基础战斗模拟器/src/domain/battle.ts) 中的 `BattleInput`，响应体对齐 `BattleSimulationResult`。
+`POST /simulate` 请求体对齐 [`src/domain/battle.ts`](./src/domain/battle.ts) 中的 `BattleInput`，响应体对齐 `BattleSimulationResult`。
 其中 `BattleInput.battle.randomSeed` 用于伪随机重播，`BattleSimulationResult.events[*].timeIndex` 用于事件时间轴。
 
-## 跨环境使用
+## 目录
 
-- 后端跑在 WSL 时，Windows 浏览器通常可直接访问 `http://localhost:8000`
-- 后端跑在 Windows 时，前端同样访问 `http://localhost:8000`
-- 前端当前保留“本地运行”模式，后端未启动时也能继续调试规则
-
-## 后续扩展建议
-
-- 单位参数：技能、冷却、Buff / Debuff
-- 战斗参数：随机种子、地图、阵型、行动条
-- 后端化：将 `src/domain` 与 `src/simulator` 提取为共享协议，前端只负责配置与可视化
+```text
+backend/      Python HTTP 后端
+docs/         规则与契约文档
+src/
+  domain/      领域模型与宏定义加载
+  simulator/   战斗引擎
+  ui/          前端页面
+scripts/       build / dev / smoke / 审计 / 启动脚本
+dist/          构建输出
+```
