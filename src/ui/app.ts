@@ -51,7 +51,7 @@ type SimulationMode = "local" | "backend";
 type SimulationView = "single" | "batch";
 type MessageTone = "error" | "success";
 type HeroMetaTone = "a" | "accent" | "b" | "blue" | "neutral";
-type ThemeMode = "light" | "dark";
+type ThemeMode = "light" | "dark" | "system";
 
 interface RenderStateSnapshot {
   scrollX: number;
@@ -106,16 +106,36 @@ interface AppState {
 
 const themeModeStorageKey = "combat-simulator-theme-mode";
 
+function normalizeThemeMode(value: string | null | undefined): ThemeMode {
+  if (value === "dark" || value === "light" || value === "system") {
+    return value;
+  }
+
+  return "system";
+}
+
 function getInitialThemeMode(): ThemeMode {
   if (typeof window === "undefined") {
-    return "light";
+    return "system";
   }
 
   try {
-    return window.localStorage.getItem(themeModeStorageKey) === "dark" ? "dark" : "light";
+    return normalizeThemeMode(window.localStorage.getItem(themeModeStorageKey));
   } catch {
-    return "light";
+    return "system";
   }
+}
+
+function getResolvedThemeMode(themeMode: ThemeMode = state.themeMode): "light" | "dark" {
+  if (themeMode !== "system") {
+    return themeMode;
+  }
+
+  if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+
+  return "light";
 }
 
 const state: AppState = {
@@ -287,11 +307,12 @@ function applyThemeMode() {
     return;
   }
 
-  document.documentElement.dataset.theme = state.themeMode;
+  document.documentElement.dataset.theme = getResolvedThemeMode();
+  document.documentElement.dataset.themeMode = state.themeMode;
 }
 
 function updateThemeMode(nextValue: string) {
-  const nextThemeMode: ThemeMode = nextValue === "dark" ? "dark" : "light";
+  const nextThemeMode = normalizeThemeMode(nextValue);
   if (state.themeMode === nextThemeMode) {
     return;
   }
@@ -1017,6 +1038,15 @@ function renderThemeSwitcher() {
     <div class="theme-switcher" role="group" aria-label="界面主题切换">
       <span class="theme-switcher-label">界面主题</span>
       <div class="theme-switcher-options">
+        <button
+          type="button"
+          class="theme-switcher-button ${state.themeMode === "system" ? "is-active" : ""}"
+          data-action="switch-theme"
+          data-theme="system"
+          aria-pressed="${state.themeMode === "system"}"
+        >
+          跟随系统
+        </button>
         <button
           type="button"
           class="theme-switcher-button ${state.themeMode === "light" ? "is-active" : ""}"
@@ -2704,7 +2734,28 @@ function bindEvents(container: HTMLElement) {
   applyLogFilters(container);
 }
 
+function bindSystemThemeListener() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return;
+  }
+
+  const mediaQueryList = window.matchMedia("(prefers-color-scheme: dark)");
+  const handleChange = () => {
+    if (state.themeMode === "system") {
+      applyThemeMode();
+    }
+  };
+
+  if (typeof mediaQueryList.addEventListener === "function") {
+    mediaQueryList.addEventListener("change", handleChange);
+    return;
+  }
+
+  mediaQueryList.addListener(handleChange);
+}
+
 export function mountApp(container: HTMLElement) {
   applyThemeMode();
+  bindSystemThemeListener();
   renderApp(container);
 }
