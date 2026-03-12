@@ -1,3 +1,12 @@
+import {
+  createSensitivitySweepValues,
+  sensitivityBattlesPerPointMax,
+  sensitivityBattlesPerPointMin,
+  sensitivityMaxPointCount,
+  sensitivityMaxTotalBattles,
+  type BattleSensitivityConfig,
+  type BattleSensitivityRequest,
+} from "./analysis.ts";
 import { unitAttributeMacroMap, unitAttributeMacros } from "./attributeMacros.ts";
 import {
   type BattleNumberFieldKey,
@@ -73,6 +82,57 @@ function validateNumberRule(value: number, rule: NumberRule) {
 
 function getUnitLabel(unit: Pick<UnitConfig, "id" | "name">) {
   return unit.name.trim() || unit.id;
+}
+
+function getSensitivityAxisTargetUnit(input: BattleInput, config: Pick<BattleSensitivityConfig, "axis">) {
+  return config.axis.scope === "unitStat"
+    ? input.units.find((candidate) => candidate.id === config.axis.unitId) ?? null
+    : null;
+}
+
+export function getSensitivityAxisBaseValue(input: BattleInput, config: Pick<BattleSensitivityConfig, "axis">) {
+  const unit = getSensitivityAxisTargetUnit(input, config);
+  if (!unit || config.axis.scope !== "unitStat") {
+    return null;
+  }
+
+  return unit.stats[config.axis.field];
+}
+
+export function validateSensitivitySweepDeltaValue(
+  input: BattleInput,
+  config: Pick<BattleSensitivityConfig, "axis">,
+  value: number,
+  label: string,
+) {
+  if (config.axis.scope !== "unitStat") {
+    return `敏感性分析目标类型不支持: ${config.axis.scope}`;
+  }
+
+  const unit = getSensitivityAxisTargetUnit(input, config);
+  if (!unit) {
+    return `敏感性分析目标单位不存在: ${config.axis.unitId}`;
+  }
+
+  const macro = unitAttributeMacroMap[config.axis.field];
+  if (!macro) {
+    return `敏感性分析属性不支持: ${config.axis.field}`;
+  }
+
+  if (!Number.isFinite(value)) {
+    return `${label}必须是合法数值`;
+  }
+
+  if (!isAlignedToStep(value, macro.step)) {
+    return `${label}必须按 ${formatNumber(macro.step)} 的步进输入`;
+  }
+
+  const actualValue = unit.stats[config.axis.field] + value;
+  if (actualValue < macro.min) {
+    return `${label}后的结果值不能小于 ${formatNumber(macro.min)}（当前基准值 ${formatNumber(unit.stats[config.axis.field])}，结果值 ${formatNumber(actualValue)}）`;
+  }
+
+  return null;
 }
 
 export function normalizeDisplayName(value: string) {
@@ -216,4 +276,101 @@ export function validateBattleBatchCount(value: number) {
 
 export function validateBattleBatchRequest(request: BattleBatchRequest) {
   return validateBattleBatchCount(request.count) ?? validateBattleInput(request.input);
+}
+
+export function validateSensitivityBattlesPerPoint(value: number) {
+  if (!Number.isFinite(value)) {
+    return "每点模拟场次必须是合法数值";
+  }
+
+  if (!Number.isInteger(value)) {
+    return "每点模拟场次必须是整数";
+  }
+
+  if (value < sensitivityBattlesPerPointMin) {
+    return `每点模拟场次必须大于等于 ${sensitivityBattlesPerPointMin}`;
+  }
+
+  if (value > sensitivityBattlesPerPointMax) {
+    return `每点模拟场次必须小于等于 ${sensitivityBattlesPerPointMax}`;
+  }
+
+  return null;
+}
+
+export function validateBattleSensitivityConfig(input: BattleInput, config: BattleSensitivityConfig) {
+  if (config.axis.scope !== "unitStat") {
+    return `敏感性分析目标类型不支持: ${config.axis.scope}`;
+  }
+
+  const unit = getSensitivityAxisTargetUnit(input, config);
+  if (!unit) {
+    return `敏感性分析目标单位不存在: ${config.axis.unitId}`;
+  }
+
+  const macro = unitAttributeMacroMap[config.axis.field];
+  if (!macro) {
+    return `敏感性分析属性不支持: ${config.axis.field}`;
+  }
+
+  const startError = validateSensitivitySweepDeltaValue(input, config, config.sweep.start, "敏感性分析起始增幅");
+  if (startError) {
+    return startError;
+  }
+
+  const endError = validateSensitivitySweepDeltaValue(input, config, config.sweep.end, "敏感性分析结束增幅");
+  if (endError) {
+    return endError;
+  }
+
+  if (!Number.isFinite(config.sweep.step)) {
+    return "敏感性分析步进必须是合法数值";
+  }
+
+  if (config.sweep.step <= 0) {
+    return "敏感性分析步进必须大于 0";
+  }
+
+  if (!isAlignedToStep(config.sweep.step, macro.step)) {
+    return `敏感性分析步进必须按 ${formatNumber(macro.step)} 的步进输入`;
+  }
+
+  const pointCount = getSensitivitySweepPointCount(config.sweep);
+  if (pointCount === null) {
+    return "敏感性分析范围与步进不匹配，无法整除生成取值点";
+  }
+
+  if (pointCount > sensitivityMaxPointCount) {
+    return `敏感性分析扫描点数必须小于等于 ${sensitivityMaxPointCount}`;
+  }
+
+  const battlesPerPointError = validateSensitivityBattlesPerPoint(config.battlesPerPoint);
+  if (battlesPerPointError) {
+    return battlesPerPointError;
+  }
+
+  const totalBattles = pointCount * config.battlesPerPoint;
+  if (totalBattles > sensitivityMaxTotalBattles) {
+    return `敏感性分析总模拟次数必须小于等于 ${sensitivityMaxTotalBattles}`;
+  }
+
+  try {
+    createSensitivitySweepValues(config.sweep);
+  } catch (error) {
+    return error instanceof Error ? error.message : "敏感性分析扫描值生成失败";
+  }
+
+  return null;
+}
+
+export function validateBattleSensitivityRequest(request: BattleSensitivityRequest) {
+  return validateBattleInput(request.input) ?? validateBattleSensitivityConfig(request.input, request);
+}
+
+function getSensitivitySweepPointCount(sweep: BattleSensitivityConfig["sweep"]) {
+  try {
+    return createSensitivitySweepValues(sweep).length;
+  } catch {
+    return null;
+  }
 }

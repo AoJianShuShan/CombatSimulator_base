@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal
 from math import floor
 from typing import Any, Callable, cast
 
+from backend.attribute_macros import get_unit_attribute_macros
 from backend.attribute_macros import get_unit_stat_role_keys
 from backend.models import (
     ActionResolutionMode,
@@ -209,6 +211,59 @@ def _clone_runtime_unit(unit: RuntimeUnit) -> RuntimeUnit:
         **unit,
         "stats": dict(unit["stats"]),
     }
+
+
+def _get_number_precision(value: float) -> int:
+    decimal_value = Decimal(str(value)).normalize()
+    return max(0, -decimal_value.as_tuple().exponent)
+
+
+def _create_sensitivity_sweep_values(sweep: dict[str, Any]) -> list[float]:
+    start = float(sweep["start"])
+    end = float(sweep["end"])
+    step = float(sweep["step"])
+    point_count = int(round(abs(end - start) / step)) + 1
+    precision = max(_get_number_precision(start), _get_number_precision(end), _get_number_precision(step))
+    direction = 1 if start <= end else -1
+
+    return [round(start + direction * index * step, precision) for index in range(point_count)]
+
+
+def _clone_battle_input(payload: BattleInput) -> BattleInput:
+    return cast(
+        BattleInput,
+        {
+            "battle": deepcopy(payload["battle"]),
+            "units": [deepcopy(unit) for unit in payload["units"]],
+        },
+    )
+
+
+def _resolve_sensitivity_actual_value(base_value: int | float, delta_value: float) -> int | float:
+    precision = max(_get_number_precision(float(base_value)), _get_number_precision(delta_value))
+    actual_value = round(float(base_value) + delta_value, precision)
+    return int(actual_value) if float(actual_value).is_integer() else actual_value
+
+
+def _apply_sensitivity_value(payload: BattleInput, axis: dict[str, Any], value: float) -> tuple[BattleInput, int | float]:
+    next_payload = _clone_battle_input(payload)
+
+    if axis["scope"] != "unitStat":
+        raise ValueError(f"axis.scope 不支持: {axis['scope']}")
+
+    target_unit_id = str(axis["unitId"])
+    target_field = str(axis["field"])
+    supported_fields = {str(macro["key"]) for macro in get_unit_attribute_macros()}
+    if target_field not in supported_fields:
+        raise ValueError(f"axis.field 不支持: {target_field}")
+
+    for unit in next_payload["units"]:
+        if unit["id"] == target_unit_id:
+            actual_value = _resolve_sensitivity_actual_value(unit["stats"][target_field], value)
+            unit["stats"][target_field] = actual_value
+            return next_payload, actual_value
+
+    raise ValueError(f"axis.unitId 不存在: {target_unit_id}")
 
 
 def _get_alive_units_by_team(units: list[RuntimeUnit], team_id: TeamId) -> list[RuntimeUnit]:
@@ -974,4 +1029,38 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
         "averageDurationMs": _round_to_four_decimals(total_duration_ms / normalized_count),
         "minDurationMs": _round_to_four_decimals(min_duration_ms) if min_duration_ms != float("inf") else 0.0,
         "maxDurationMs": _round_to_four_decimals(max_duration_ms) if max_duration_ms != float("-inf") else 0.0,
+    }
+
+
+def simulate_battle_sensitivity(payload: dict[str, Any]) -> dict[str, Any]:
+    input_payload = cast(BattleInput, payload["input"])
+    axis = cast(dict[str, Any], payload["axis"])
+    sweep = cast(dict[str, Any], payload["sweep"])
+    battles_per_point = int(payload["battlesPerPoint"])
+    values = _create_sensitivity_sweep_values(sweep)
+    points: list[dict[str, Any]] = []
+
+    for index, value in enumerate(values):
+        point_payload, actual_value = _apply_sensitivity_value(input_payload, axis, value)
+        summary = simulate_battle_batch_summary(
+            point_payload,
+            battles_per_point,
+        )
+        points.append(
+            {
+                "index": index,
+                "value": value,
+                "actualValue": actual_value,
+                "summary": summary,
+            }
+        )
+
+    return {
+        "baseSeed": int(input_payload["battle"]["randomSeed"]),
+        "axis": axis,
+        "sweep": sweep,
+        "pointCount": len(values),
+        "battlesPerPoint": battles_per_point,
+        "totalBattles": len(values) * battles_per_point,
+        "points": points,
     }

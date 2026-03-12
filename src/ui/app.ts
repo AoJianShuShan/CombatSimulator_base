@@ -1,5 +1,12 @@
 import {
+  defaultSensitivityBattlesPerPoint,
+  getSensitivitySweepPointCount,
+  type BattleSensitivityConfig,
+  type BattleSensitivityResult,
+} from "../domain/analysis.ts";
+import {
   unitAttributeMacroMap,
+  unitAttributeMacros,
   unitStatRoleKeys,
 } from "../domain/attributeMacros.ts";
 import {
@@ -33,25 +40,31 @@ import {
   unitPositionOrder,
 } from "../domain/battle.ts";
 import {
+  getSensitivityAxisBaseValue,
   normalizeDisplayName,
   validateAttackElement,
   validateBattleBatchCount,
   validateBattleInput,
   validateBattleNumberField,
+  validateBattleSensitivityConfig,
   validateDisplayName,
   validateProtectionType,
+  validateSensitivityBattlesPerPoint,
+  validateSensitivitySweepDeltaValue,
   validateUnitPosition,
   validateUnitStatField,
 } from "../domain/validation.ts";
 import { simulateBattle } from "../simulator/simulateBattle.ts";
 import { simulateBattleBatchSummaryCancelable } from "../simulator/simulateBattleBatch.ts";
-import { fetchBackendHealth, simulateBattleBatchByApi, simulateBattleByApi } from "./api.ts";
+import { simulateBattleSensitivityCancelable } from "../simulator/simulateBattleSensitivity.ts";
+import { fetchBackendHealth, simulateBattleBatchByApi, simulateBattleByApi, simulateBattleSensitivityByApi } from "./api.ts";
 
 type SimulationMode = "local" | "backend";
-type SimulationView = "single" | "batch";
+type SimulationView = "single" | "batch" | "sensitivity";
 type MessageTone = "error" | "success";
 type HeroMetaTone = "a" | "accent" | "b" | "blue" | "neutral";
 type ThemeMode = "light" | "dark" | "system";
+type SensitivityLineId = "rateA" | "rateB" | "rateDraw" | "netA" | "netB" | "completion";
 
 interface RenderStateSnapshot {
   scrollX: number;
@@ -86,6 +99,8 @@ interface AppState {
   draft: BattleInput;
   result: BattleSimulationResult | null;
   batchSummary: BattleBatchSummaryResult | null;
+  sensitivityConfig: BattleSensitivityConfig;
+  sensitivityResult: BattleSensitivityResult | null;
   themeMode: ThemeMode;
   simulationMode: SimulationMode;
   simulationView: SimulationView;
@@ -99,6 +114,7 @@ interface AppState {
   message: string | null;
   messageTone: MessageTone;
   editingUnitId: string | null;
+  sensitivityLineVisibility: Record<SensitivityLineId, boolean>;
   logFilters: {
     actor: string;
     summary: string;
@@ -109,6 +125,7 @@ interface AppState {
 const themeModeStorageKey = "combat-simulator-theme-mode";
 const singleSimulationTimeoutMs = 30000;
 const batchSimulationTimeoutMs = 60000;
+const sensitivitySimulationTimeoutMs = 120000;
 
 type SubmissionCancelReason = "manual" | "timeout";
 
@@ -151,10 +168,86 @@ function getResolvedThemeMode(themeMode: ThemeMode = state.themeMode): "light" |
   return "light";
 }
 
+function createDefaultSensitivityLineVisibility(): Record<SensitivityLineId, boolean> {
+  return {
+    rateA: true,
+    rateB: true,
+    rateDraw: true,
+    netA: true,
+    netB: true,
+    completion: true,
+  };
+}
+
+function getNumberPrecision(value: number) {
+  const text = `${value}`;
+  if (!text.includes(".")) {
+    return 0;
+  }
+
+  return text.length - text.indexOf(".") - 1;
+}
+
+function roundToPrecision(value: number, precision: number) {
+  if (precision <= 0) {
+    return Math.round(value);
+  }
+
+  const factor = 10 ** precision;
+  return Math.round(value * factor) / factor;
+}
+
+function roundByStep(value: number, step: number) {
+  return roundToPrecision(value, getNumberPrecision(step));
+}
+
+function getSensitivityBaseValue(config: BattleSensitivityConfig) {
+  return getSensitivityAxisBaseValue(state.draft, config);
+}
+
+function createDefaultSensitivityConfig(input: BattleInput): BattleSensitivityConfig {
+  const unit = input.units[0];
+  const field = "attack" as keyof typeof unitAttributeMacroMap;
+
+  return {
+    axis: {
+      scope: "unitStat",
+      unitId: unit?.id ?? "",
+      field,
+    },
+    sweep: createDefaultSensitivitySweep(unit?.id ?? "", field, input),
+    battlesPerPoint: defaultSensitivityBattlesPerPoint,
+  };
+}
+
+function syncSensitivityConfigWithDraft(input: BattleInput, currentConfig: BattleSensitivityConfig) {
+  const fallbackConfig = createDefaultSensitivityConfig(input);
+  const targetUnit = input.units.find((unit) => unit.id === currentConfig.axis.unitId) ?? input.units[0];
+  if (!targetUnit) {
+    return fallbackConfig;
+  }
+
+  const field = unitAttributeMacroMap[currentConfig.axis.field] ? currentConfig.axis.field : fallbackConfig.axis.field;
+  const axisChanged = targetUnit.id !== currentConfig.axis.unitId || field !== currentConfig.axis.field;
+  return {
+    ...currentConfig,
+    axis: {
+      scope: "unitStat",
+      unitId: targetUnit.id,
+      field,
+    },
+    sweep: axisChanged ? createDefaultSensitivitySweep(targetUnit.id, field, input) : currentConfig.sweep,
+  };
+}
+
+const initialDraft = createDefaultBattleInput();
+
 const state: AppState = {
-  draft: createDefaultBattleInput(),
+  draft: initialDraft,
   result: null,
   batchSummary: null,
+  sensitivityConfig: createDefaultSensitivityConfig(initialDraft),
+  sensitivityResult: null,
   themeMode: getInitialThemeMode(),
   simulationMode: "local",
   simulationView: "single",
@@ -168,6 +261,7 @@ const state: AppState = {
   message: null,
   messageTone: "success",
   editingUnitId: null,
+  sensitivityLineVisibility: createDefaultSensitivityLineVisibility(),
   logFilters: {
     actor: "",
     summary: "",
@@ -265,6 +359,10 @@ function escapeHtml(value: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function escapeHtmlAttribute(value: string) {
+  return escapeHtml(value).replaceAll("\n", "&#10;");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -417,10 +515,23 @@ function updateThemeMode(nextValue: string) {
   applyThemeMode();
 }
 
+function toggleSensitivityLineVisibility(rawLineId: string) {
+  const lineId = rawLineId as SensitivityLineId;
+  if (!(lineId in state.sensitivityLineVisibility)) {
+    return;
+  }
+
+  state.sensitivityLineVisibility = {
+    ...state.sensitivityLineVisibility,
+    [lineId]: !state.sensitivityLineVisibility[lineId],
+  };
+}
+
 function invalidateResult() {
   stopReplay();
   state.result = null;
   state.batchSummary = null;
+  state.sensitivityResult = null;
   state.replayEventIndex = 0;
   clearMessage();
 }
@@ -735,6 +846,7 @@ function removeUnit(unitId: string) {
 
   invalidateResult();
   state.draft.units = state.draft.units.filter((unit) => unit.id !== unitId);
+  state.sensitivityConfig = syncSensitivityConfigWithDraft(state.draft, state.sensitivityConfig);
   if (state.editingUnitId === unitId) {
     state.editingUnitId = null;
   }
@@ -745,6 +857,8 @@ function resetDraft() {
   state.draft = createDefaultBattleInput();
   state.result = null;
   state.batchSummary = null;
+  state.sensitivityConfig = createDefaultSensitivityConfig(state.draft);
+  state.sensitivityResult = null;
   clearMessage();
   state.isSubmitting = false;
   state.submissionCancelable = false;
@@ -785,6 +899,151 @@ function updateBatchCount(rawValue: string) {
   state.batchCount = value;
   state.batchSummary = null;
   clearMessage();
+}
+
+function getSensitivityTargetUnit(config: BattleSensitivityConfig = state.sensitivityConfig) {
+  return state.draft.units.find((unit) => unit.id === config.axis.unitId) ?? null;
+}
+
+function createDefaultSensitivitySweep(
+  unitId: string,
+  field: keyof typeof unitAttributeMacroMap,
+  input: BattleInput = state.draft,
+) {
+  const unit = input.units.find((candidate) => candidate.id === unitId) ?? input.units[0];
+  const macro = unitAttributeMacroMap[field];
+  const baseValue = unit ? unit.stats[field] : macro.default;
+  const availableNegativeSteps = Math.max(0, Math.floor((baseValue - macro.min) / macro.step + 1e-9));
+  const negativeSteps = Math.min(5, availableNegativeSteps);
+  const positiveSteps = 5;
+
+  return {
+    start: roundByStep(-negativeSteps * macro.step, macro.step),
+    end: roundByStep(positiveSteps * macro.step, macro.step),
+    step: macro.step,
+  };
+}
+
+function updateSensitivityAxisUnit(unitId: string) {
+  const unit = state.draft.units.find((candidate) => candidate.id === unitId);
+  if (!unit) {
+    setMessage(`敏感性分析目标单位不存在: ${unitId}`, "error");
+    return;
+  }
+
+  invalidateResult();
+  state.sensitivityConfig = {
+    ...state.sensitivityConfig,
+    axis: {
+      ...state.sensitivityConfig.axis,
+      unitId,
+    },
+    sweep: createDefaultSensitivitySweep(unitId, state.sensitivityConfig.axis.field),
+  };
+}
+
+function updateSensitivityAxisField(rawField: string) {
+  const field = rawField as keyof typeof unitAttributeMacroMap;
+  if (!unitAttributeMacroMap[field]) {
+    setMessage(`敏感性分析属性不支持: ${rawField}`, "error");
+    return;
+  }
+
+  invalidateResult();
+  state.sensitivityConfig = {
+    ...state.sensitivityConfig,
+    axis: {
+      ...state.sensitivityConfig.axis,
+      field,
+    },
+    sweep: createDefaultSensitivitySweep(state.sensitivityConfig.axis.unitId, field),
+  };
+}
+
+function updateSensitivitySweepField(field: keyof BattleSensitivityConfig["sweep"], rawValue: string) {
+  const macro = unitAttributeMacroMap[state.sensitivityConfig.axis.field];
+  const value = Number(rawValue);
+
+  if (field === "step") {
+    if (!Number.isFinite(value)) {
+      setMessage("敏感性分析步进必须是合法数值", "error");
+      return;
+    }
+
+    if (value <= 0) {
+      setMessage("敏感性分析步进必须大于 0", "error");
+      return;
+    }
+
+    if (Math.abs(value / macro.step - Math.round(value / macro.step)) >= 1e-9) {
+      setMessage(`敏感性分析步进必须按 ${macro.step} 的步进输入`, "error");
+      return;
+    }
+  } else {
+    const error = validateSensitivitySweepDeltaValue(
+      state.draft,
+      state.sensitivityConfig,
+      value,
+      `敏感性分析${field === "start" ? "起始增幅" : "结束增幅"}`,
+    );
+    if (error) {
+      setMessage(error, "error");
+      return;
+    }
+  }
+
+  invalidateResult();
+  state.sensitivityConfig = {
+    ...state.sensitivityConfig,
+    sweep: {
+      ...state.sensitivityConfig.sweep,
+      [field]: value,
+    },
+  };
+}
+
+function updateSensitivityBattlesPerPoint(rawValue: string) {
+  const value = Number(rawValue);
+  const error = validateSensitivityBattlesPerPoint(value);
+  if (error) {
+    setMessage(error, "error");
+    return;
+  }
+
+  invalidateResult();
+  state.sensitivityConfig = {
+    ...state.sensitivityConfig,
+    battlesPerPoint: value,
+  };
+}
+
+function applySensitivityValueToDraft(rawActualValue: string, rawDeltaValue: string) {
+  const actualValue = Number(rawActualValue);
+  const deltaValue = Number(rawDeltaValue);
+  if (!Number.isFinite(actualValue) || !Number.isFinite(deltaValue)) {
+    setMessage("敏感性分析取值点不合法", "error");
+    return;
+  }
+
+  const unitId = state.sensitivityConfig.axis.unitId;
+  const field = state.sensitivityConfig.axis.field;
+  invalidateResult();
+  state.draft.units = state.draft.units.map((unit) =>
+    unit.id === unitId
+      ? {
+          ...unit,
+          stats: {
+            ...unit.stats,
+            [field]: actualValue,
+          },
+        }
+      : unit
+  );
+  state.simulationView = "single";
+  setMessage(
+    `已将 ${getUnitLabel(unitId)} 的 ${unitAttributeMacroMap[field].label} 应用为 ${formatCompactValue(actualValue)}（增幅 ${formatSignedCompactValue(deltaValue)}）`,
+    "success",
+  );
 }
 
 function updateBackendBaseUrl(value: string) {
@@ -938,6 +1197,8 @@ async function importDraft(file: File) {
   state.draft = draft;
   state.result = null;
   state.batchSummary = null;
+  state.sensitivityConfig = syncSensitivityConfigWithDraft(draft, state.sensitivityConfig);
+  state.sensitivityResult = null;
   state.replayEventIndex = 0;
   state.isSubmitting = false;
   state.submissionCancelable = false;
@@ -953,27 +1214,48 @@ async function importDraft(file: File) {
 }
 
 async function exportResult() {
-  const payload = state.simulationView === "single" ? state.result : state.batchSummary;
+  const payload =
+    state.simulationView === "single"
+      ? state.result
+      : state.simulationView === "batch"
+        ? state.batchSummary
+        : state.sensitivityResult;
   if (!payload) {
     return;
   }
 
   await saveJsonFile(
-    state.simulationView === "single" ? "battle-result.json" : "battle-batch-summary.json",
+    state.simulationView === "single"
+      ? "battle-result.json"
+      : state.simulationView === "batch"
+        ? "battle-batch-summary.json"
+        : "battle-sensitivity-result.json",
     payload,
   );
 }
 
 function getSimulationLabel() {
   if (state.simulationMode === "backend") {
-    return state.simulationView === "single" ? "正在调用后端单场模拟" : "正在调用后端多场统计";
+    if (state.simulationView === "single") {
+      return "正在调用后端单场模拟";
+    }
+    if (state.simulationView === "batch") {
+      return "正在调用后端多场统计";
+    }
+    return "正在调用后端敏感性分析";
   }
 
-  return state.simulationView === "single" ? "正在执行前端本地单场模拟" : "正在执行前端本地多场统计";
+  if (state.simulationView === "single") {
+    return "正在执行前端本地单场模拟";
+  }
+  if (state.simulationView === "batch") {
+    return "正在执行前端本地多场统计";
+  }
+  return "正在执行前端本地敏感性分析";
 }
 
 function isSimulationCancelable() {
-  return state.simulationMode === "backend" || (state.simulationMode === "local" && state.simulationView === "batch");
+  return state.simulationMode === "backend" || (state.simulationMode === "local" && state.simulationView !== "single");
 }
 
 function getSimulationTimeoutMs() {
@@ -981,7 +1263,13 @@ function getSimulationTimeoutMs() {
     return 0;
   }
 
-  return state.simulationView === "single" ? singleSimulationTimeoutMs : batchSimulationTimeoutMs;
+  if (state.simulationView === "single") {
+    return singleSimulationTimeoutMs;
+  }
+  if (state.simulationView === "batch") {
+    return batchSimulationTimeoutMs;
+  }
+  return sensitivitySimulationTimeoutMs;
 }
 
 async function runSimulation(container: HTMLElement) {
@@ -992,7 +1280,9 @@ async function runSimulation(container: HTMLElement) {
   const validationError =
     state.simulationView === "single"
       ? validateBattleInput(state.draft)
-      : validateBattleBatchCount(state.batchCount) ?? validateBattleInput(state.draft);
+      : state.simulationView === "batch"
+        ? validateBattleBatchCount(state.batchCount) ?? validateBattleInput(state.draft)
+        : validateBattleInput(state.draft) ?? validateBattleSensitivityConfig(state.draft, state.sensitivityConfig);
   if (validationError) {
     setMessage(validationError, "error");
     return;
@@ -1031,35 +1321,72 @@ async function runSimulation(container: HTMLElement) {
       return;
     }
 
-    const batchSummary =
+    if (simulationView === "batch") {
+      const batchSummary =
+        simulationMode === "local"
+          ? await simulateBattleBatchSummaryCancelable(draft, batchCount, {
+              onProgress: (completed, total) => {
+                if (!isActiveSubmission(submission)) {
+                  return;
+                }
+                if (completed !== total && completed % 100 !== 0) {
+                  return;
+                }
+
+                state.submissionLabel = `正在执行前端本地多场统计（${completed}/${total}）`;
+                renderApp(container);
+              },
+              signal: submission.controller?.signal,
+            })
+          : await simulateBattleBatchByApi(
+              backendBaseUrl,
+              {
+                count: batchCount,
+                input: draft,
+              },
+              { signal: submission.controller?.signal },
+            );
+      if (!isActiveSubmission(submission)) {
+        return;
+      }
+
+      state.batchSummary = batchSummary;
+      return;
+    }
+
+    const sensitivityRequest = {
+      input: draft,
+      ...state.sensitivityConfig,
+    } satisfies BattleSensitivityConfig & { input: BattleInput };
+    const sensitivityResult =
       simulationMode === "local"
-        ? await simulateBattleBatchSummaryCancelable(draft, batchCount, {
-            onProgress: (completed, total) => {
+        ? await simulateBattleSensitivityCancelable(sensitivityRequest, {
+            onProgress: (progress) => {
               if (!isActiveSubmission(submission)) {
                 return;
               }
-              if (completed !== total && completed % 100 !== 0) {
+
+              const completedBattles = progress.completedBattles;
+              if (
+                completedBattles !== progress.totalBattles &&
+                completedBattles % Math.max(50, state.sensitivityConfig.battlesPerPoint) !== 0
+              ) {
                 return;
               }
 
-              state.submissionLabel = `正在执行前端本地多场统计（${completed}/${total}）`;
+              state.submissionLabel =
+                `正在执行前端本地敏感性分析（点 ${progress.currentPointIndex + 1}/${progress.totalPoints}，` +
+                `总进度 ${completedBattles}/${progress.totalBattles}）`;
               renderApp(container);
             },
             signal: submission.controller?.signal,
           })
-        : await simulateBattleBatchByApi(
-            backendBaseUrl,
-            {
-              count: batchCount,
-              input: draft,
-            },
-            { signal: submission.controller?.signal },
-          );
+        : await simulateBattleSensitivityByApi(backendBaseUrl, sensitivityRequest, { signal: submission.controller?.signal });
     if (!isActiveSubmission(submission)) {
       return;
     }
 
-    state.batchSummary = batchSummary;
+    state.sensitivityResult = sensitivityResult;
   } catch (error) {
     if (!isActiveSubmission(submission)) {
       return;
@@ -1067,8 +1394,10 @@ async function runSimulation(container: HTMLElement) {
 
     if (simulationView === "single") {
       state.result = null;
-    } else {
+    } else if (simulationView === "batch") {
       state.batchSummary = null;
+    } else {
+      state.sensitivityResult = null;
     }
 
     if (isAbortError(error)) {
@@ -1282,6 +1611,15 @@ function renderSimulationViewTabs() {
         aria-selected="${state.simulationView === "batch"}"
       >
         多场统计
+      </button>
+      <button
+        class="view-switch-button ${state.simulationView === "sensitivity" ? "is-active" : ""}"
+        data-action="switch-simulation-view"
+        data-view="sensitivity"
+        role="tab"
+        aria-selected="${state.simulationView === "sensitivity"}"
+      >
+        敏感性分析
       </button>
     </div>
   `;
@@ -2260,8 +2598,634 @@ function renderBatchSummary() {
   `;
 }
 
+function formatCompactValue(value: number) {
+  const rounded = Math.round(value * 1000) / 1000;
+  return Number.isInteger(rounded) ? `${rounded}` : `${rounded}`;
+}
+
+function formatSignedCompactValue(value: number) {
+  const formatted = formatCompactValue(Math.abs(value));
+  if (value > 0) {
+    return `+${formatted}`;
+  }
+
+  if (value < 0) {
+    return `-${formatted}`;
+  }
+
+  return formatted;
+}
+
+function getSensitivityCompletionLabel() {
+  return state.draft.battle.actionResolutionMode === "turnBasedSpeed" ? "平均完成回合" : "平均完成时间";
+}
+
+function getSensitivityCompletionValue(summary: BattleBatchSummaryResult) {
+  return state.draft.battle.actionResolutionMode === "turnBasedSpeed"
+    ? `${summary.averageRounds}`
+    : formatTimelineMs(summary.averageDurationMs);
+}
+
+function getCurrentSimulationViewLabel() {
+  if (state.simulationView === "single") {
+    return "单场模拟";
+  }
+  if (state.simulationView === "batch") {
+    return `多场统计 · ${state.batchCount} 场`;
+  }
+
+  return "敏感性分析";
+}
+
+function renderSensitivityConfigSection() {
+  if (state.simulationView !== "sensitivity") {
+    return "";
+  }
+
+  const baseValue = getSensitivityBaseValue(state.sensitivityConfig);
+  const pointCount = getSensitivitySweepPointCount(state.sensitivityConfig.sweep);
+  const totalBattles = pointCount === null ? null : pointCount * state.sensitivityConfig.battlesPerPoint;
+
+  return `
+    <div class="unit-attribute-section sensitivity-config-section">
+      <header class="unit-attribute-section-header">
+        <h3>敏感性设置</h3>
+      </header>
+      <div class="field-grid field-grid-dense">
+        <div class="field">
+          <label>分析目标单位</label>
+          <select data-action="update-sensitivity-unit" data-focus-key="sensitivity-unit">
+            ${state.draft.units
+              .map(
+                (unit) =>
+                  `<option value="${unit.id}" ${state.sensitivityConfig.axis.unitId === unit.id ? "selected" : ""}>${escapeHtml(
+                    `${state.draft.battle.teamNames[unit.teamId]} · ${unit.name.trim() || unit.id} (${unit.id})`,
+                  )}</option>`,
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>分析属性</label>
+          <select data-action="update-sensitivity-field" data-focus-key="sensitivity-field">
+            ${unitAttributeMacros
+              .map(
+                (macro) =>
+                  `<option value="${macro.key}" ${state.sensitivityConfig.axis.field === macro.key ? "selected" : ""}>${escapeHtml(
+                    macro.label,
+                  )}</option>`,
+              )
+              .join("")}
+          </select>
+        </div>
+        <div class="field">
+          <label>当前基准值</label>
+          <input value="${baseValue === null ? "-" : formatCompactValue(baseValue)}" disabled />
+        </div>
+        <div class="field">
+          <label>起始增幅</label>
+          <input
+            type="number"
+            step="${unitAttributeMacroMap[state.sensitivityConfig.axis.field].step}"
+            value="${state.sensitivityConfig.sweep.start}"
+            data-action="update-sensitivity-sweep"
+            data-field="start"
+            data-focus-key="sensitivity-sweep:start"
+          />
+        </div>
+        <div class="field">
+          <label>结束增幅</label>
+          <input
+            type="number"
+            step="${unitAttributeMacroMap[state.sensitivityConfig.axis.field].step}"
+            value="${state.sensitivityConfig.sweep.end}"
+            data-action="update-sensitivity-sweep"
+            data-field="end"
+            data-focus-key="sensitivity-sweep:end"
+          />
+        </div>
+        <div class="field">
+          <label>步进</label>
+          <input
+            type="number"
+            min="${unitAttributeMacroMap[state.sensitivityConfig.axis.field].step}"
+            step="${unitAttributeMacroMap[state.sensitivityConfig.axis.field].step}"
+            value="${state.sensitivityConfig.sweep.step}"
+            data-action="update-sensitivity-sweep"
+            data-field="step"
+            data-focus-key="sensitivity-sweep:step"
+          />
+        </div>
+        <div class="field">
+          <label>每点模拟场次</label>
+          <input
+            type="number"
+            min="1"
+            max="5000"
+            step="1"
+            value="${state.sensitivityConfig.battlesPerPoint}"
+            data-action="update-sensitivity-battles"
+            data-focus-key="sensitivity-battles"
+          />
+        </div>
+        <div class="field">
+          <label>扫描点数</label>
+          <input value="${pointCount === null ? "范围无效" : pointCount}" disabled />
+        </div>
+        <div class="field">
+          <label>总模拟次数</label>
+          <input value="${totalBattles === null ? "范围无效" : totalBattles}" disabled />
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSensitivitySummary() {
+  if (!state.sensitivityResult) {
+    return `<p class="empty">选择一个单位属性后运行分析，这里会展示基准值、增幅范围、趋势图和每个取值点的统计结果。</p>`;
+  }
+
+  const targetUnit = getSensitivityTargetUnit();
+  const fieldLabel = unitAttributeMacroMap[state.sensitivityResult.axis.field].label;
+  const baseValue = getSensitivityBaseValue(state.sensitivityResult);
+  const firstPoint = state.sensitivityResult.points[0] ?? null;
+  const lastPoint = state.sensitivityResult.points.at(-1) ?? null;
+  const deltaRangeText =
+    `${formatSignedCompactValue(state.sensitivityResult.sweep.start)} → ${formatSignedCompactValue(state.sensitivityResult.sweep.end)}` +
+    `，步进 ${formatCompactValue(state.sensitivityResult.sweep.step)}`;
+  const actualRangeText =
+    firstPoint && lastPoint
+      ? `${formatCompactValue(firstPoint.actualValue)} → ${formatCompactValue(lastPoint.actualValue)}`
+      : "-";
+
+  return `
+    <div class="summary">
+      <div class="summary-item summary-item-neutral">
+        <span>分析目标</span>
+        <strong>${escapeHtml(targetUnit ? `${targetUnit.name.trim() || targetUnit.id} · ${fieldLabel}` : state.sensitivityResult.axis.unitId)}</strong>
+      </div>
+      <div class="summary-item summary-item-highlight">
+        <span>当前基准值</span>
+        <strong>${baseValue === null ? "-" : escapeHtml(formatCompactValue(baseValue))}</strong>
+      </div>
+      <div class="summary-item summary-item-highlight">
+        <span>增幅范围</span>
+        <strong>${escapeHtml(deltaRangeText)}</strong>
+      </div>
+      <div class="summary-item summary-item-neutral">
+        <span>结果范围</span>
+        <strong>${escapeHtml(actualRangeText)}</strong>
+      </div>
+      <div class="summary-item summary-item-blue">
+        <span>扫描点数</span>
+        <strong>${state.sensitivityResult.pointCount}</strong>
+      </div>
+      <div class="summary-item summary-item-neutral">
+        <span>每点模拟场次</span>
+        <strong>${state.sensitivityResult.battlesPerPoint}</strong>
+      </div>
+      <div class="summary-item summary-item-neutral">
+        <span>总模拟次数</span>
+        <strong>${state.sensitivityResult.totalBattles}</strong>
+      </div>
+      <div class="summary-item summary-item-neutral">
+        <span>根种子</span>
+        <strong>${state.sensitivityResult.baseSeed}</strong>
+      </div>
+    </div>
+  `;
+}
+
+interface SensitivityChartLine {
+  id: SensitivityLineId;
+  className: string;
+  label: string;
+  values: number[];
+}
+
+interface SensitivityChartTick {
+  value: number;
+  label: string;
+  emphasized?: boolean;
+}
+
+function getSensitivityChartX(index: number, pointCount: number, width: number, padding: number) {
+  const drawableWidth = width - padding * 2;
+  return padding + (pointCount <= 1 ? drawableWidth / 2 : (drawableWidth * index) / (pointCount - 1));
+}
+
+function getSensitivityChartY(value: number, minValue: number, maxValue: number, height: number, padding: number) {
+  const drawableHeight = height - padding * 2;
+  const ratio = maxValue === minValue ? 0.5 : (value - minValue) / (maxValue - minValue);
+  return height - padding - ratio * drawableHeight;
+}
+
+function buildSensitivityLinePath(
+  values: number[],
+  width: number,
+  height: number,
+  padding: number,
+  minValue: number,
+  maxValue: number,
+) {
+  if (values.length === 0) {
+    return "";
+  }
+
+  return values
+    .map((value, index) => {
+      const x = getSensitivityChartX(index, values.length, width, padding);
+      const y = getSensitivityChartY(value, minValue, maxValue, height, padding);
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function getSensitivityHoverBandBounds(index: number, pointCount: number, width: number, padding: number) {
+  const centerX = getSensitivityChartX(index, pointCount, width, padding);
+  const previousX = index > 0 ? getSensitivityChartX(index - 1, pointCount, width, padding) : padding;
+  const nextX = index < pointCount - 1 ? getSensitivityChartX(index + 1, pointCount, width, padding) : width - padding;
+  const left = index === 0 ? padding : (previousX + centerX) / 2;
+  const right = index === pointCount - 1 ? width - padding : (centerX + nextX) / 2;
+
+  return {
+    left,
+    width: Math.max(1, right - left),
+  };
+}
+
+function renderSensitivityLinePoints(
+  line: SensitivityChartLine,
+  width: number,
+  height: number,
+  padding: number,
+  minValue: number,
+  maxValue: number,
+) {
+  return line.values
+    .map((value, index) => {
+      const x = getSensitivityChartX(index, line.values.length, width, padding);
+      const y = getSensitivityChartY(value, minValue, maxValue, height, padding);
+      return `<circle class="sensitivity-point ${line.className}" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="4" />`;
+    })
+    .join("");
+}
+
+function renderSensitivityHoverBands(
+  lines: SensitivityChartLine[],
+  xValues: number[],
+  xAxisLabel: string,
+  yValueLabel: string,
+  formatYValue: (value: number) => string,
+  width: number,
+  height: number,
+  padding: number,
+) {
+  if (lines.length === 0 || xValues.length === 0) {
+    return "";
+  }
+
+  return xValues
+    .map((xValue, index) => {
+      const { left, width: bandWidth } = getSensitivityHoverBandBounds(index, xValues.length, width, padding);
+      const tooltip = [
+        `${xAxisLabel}: ${formatSignedCompactValue(xValue)}`,
+        ...lines.map((line) => `${line.label}: ${formatYValue(line.values[index] ?? 0)}`),
+      ].join("\n");
+
+      return `
+        <rect
+          class="sensitivity-hover-band"
+          x="${left.toFixed(2)}"
+          y="${padding}"
+          width="${bandWidth.toFixed(2)}"
+          height="${(height - padding * 2).toFixed(2)}"
+          data-sensitivity-tooltip="${escapeHtmlAttribute(tooltip)}"
+        />
+      `;
+    })
+    .join("");
+}
+
+function renderSensitivityGridLines(
+  width: number,
+  height: number,
+  padding: number,
+  minValue: number,
+  maxValue: number,
+  ticks: SensitivityChartTick[],
+) {
+  const seen = new Set<string>();
+
+  return ticks
+    .map((tick) => {
+      const y = getSensitivityChartY(tick.value, minValue, maxValue, height, padding);
+      const key = y.toFixed(2);
+      if (seen.has(key)) {
+        return "";
+      }
+      seen.add(key);
+
+      return `<line class="sensitivity-grid-line${tick.emphasized ? " is-emphasis" : ""}" x1="${padding}" y1="${y.toFixed(2)}" x2="${width - padding}" y2="${y.toFixed(2)}" />`;
+    })
+    .join("");
+}
+
+function renderSensitivityLineChart(
+  title: string,
+  metricLabel: string,
+  xLabel: string,
+  xValues: number[],
+  lines: SensitivityChartLine[],
+  yRange: { min: number; max: number },
+  yTicks: SensitivityChartTick[],
+  xMinText: string,
+  xMaxText: string,
+  yValueLabel: string,
+  formatYValue: (value: number) => string,
+) {
+  const width = 640;
+  const height = 220;
+  const padding = 20;
+  const visibleLines = lines.filter((line) => state.sensitivityLineVisibility[line.id]);
+
+  return `
+    <article class="panel panel-inner">
+      <div class="panel-body">
+        <div class="panel-header">
+          <h3 class="panel-title">${escapeHtml(title)}</h3>
+          <span class="field-hint">${escapeHtml(metricLabel)}</span>
+        </div>
+        <div class="sensitivity-legend">
+          ${lines
+            .map(
+              (line) => `
+                <button
+                  type="button"
+                  class="badge badge-neutral sensitivity-legend-item sensitivity-legend-button ${state.sensitivityLineVisibility[line.id] ? "is-active" : "is-inactive"}"
+                  data-action="toggle-sensitivity-line"
+                  data-line-id="${line.id}"
+                  aria-pressed="${state.sensitivityLineVisibility[line.id]}"
+                >
+                  <span class="sensitivity-legend-dot ${line.className}"></span>${escapeHtml(line.label)}
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+        <div class="sensitivity-chart-shell">
+          <div class="sensitivity-chart-y-axis" aria-hidden="true">
+            ${yTicks
+              .map((tick) => `<span class="${tick.emphasized ? "is-emphasis" : ""}">${escapeHtml(tick.label)}</span>`)
+              .join("")}
+          </div>
+          <div class="sensitivity-chart-main">
+            <svg class="sensitivity-chart" viewBox="0 0 ${width} ${height}" aria-label="${escapeHtml(title)}">
+              <line class="sensitivity-grid-line sensitivity-grid-line-axis" x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" />
+              <line class="sensitivity-grid-line sensitivity-grid-line-axis" x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" />
+              ${renderSensitivityGridLines(width, height, padding, yRange.min, yRange.max, yTicks)}
+              ${visibleLines
+                .map(
+                  (line) => `
+                    <path class="sensitivity-line ${line.className}" d="${buildSensitivityLinePath(
+                      line.values,
+                      width,
+                      height,
+                      padding,
+                      yRange.min,
+                      yRange.max,
+                    )}" />
+                    ${renderSensitivityLinePoints(
+                      line,
+                      width,
+                      height,
+                      padding,
+                      yRange.min,
+                      yRange.max,
+                    )}
+                  `,
+                )
+                .join("")}
+              ${renderSensitivityHoverBands(visibleLines, xValues, xLabel, yValueLabel, formatYValue, width, height, padding)}
+            </svg>
+            <div class="sensitivity-chart-tooltip" role="status" aria-live="polite"></div>
+            <div class="sensitivity-chart-x-axis">
+              <span class="sensitivity-chart-axis-boundary">${escapeHtml(xMinText)}</span>
+              <span class="sensitivity-chart-axis-label">${escapeHtml(xLabel)}</span>
+              <span class="sensitivity-chart-axis-boundary">${escapeHtml(xMaxText)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderSensitivityCharts() {
+  if (!state.sensitivityResult) {
+    return "";
+  }
+
+  const fieldLabel = unitAttributeMacroMap[state.sensitivityResult.axis.field].label;
+  const xAxisLabel = `${fieldLabel}增幅`;
+  const xValues = state.sensitivityResult.points.map((point) => point.value);
+  const rateLines = [
+    {
+      id: "rateA" as const,
+      className: "sensitivity-line-a",
+      label: `${state.draft.battle.teamNames.A}胜率`,
+      values: state.sensitivityResult.points.map((point) => point.summary.winRates.A),
+    },
+    {
+      id: "rateB" as const,
+      className: "sensitivity-line-b",
+      label: `${state.draft.battle.teamNames.B}胜率`,
+      values: state.sensitivityResult.points.map((point) => point.summary.winRates.B),
+    },
+    {
+      id: "rateDraw" as const,
+      className: "sensitivity-line-draw",
+      label: "平局率",
+      values: state.sensitivityResult.points.map((point) => point.summary.drawRate),
+    },
+  ];
+  const netAdvantageLines = [
+    {
+      id: "netA" as const,
+      className: "sensitivity-line-a",
+      label: `${state.draft.battle.teamNames.A}净优势`,
+      values: state.sensitivityResult.points.map((point) => point.summary.averageTerminalNetAdvantages.A),
+    },
+    {
+      id: "netB" as const,
+      className: "sensitivity-line-b",
+      label: `${state.draft.battle.teamNames.B}净优势`,
+      values: state.sensitivityResult.points.map((point) => point.summary.averageTerminalNetAdvantages.B),
+    },
+  ];
+  const completionLabel = getSensitivityCompletionLabel();
+  const completionValues = state.sensitivityResult.points.map((point) =>
+    state.draft.battle.actionResolutionMode === "turnBasedSpeed"
+      ? point.summary.averageRounds
+      : point.summary.averageDurationMs
+  );
+  const completionMin = Math.min(...completionValues);
+  const completionMax = Math.max(...completionValues);
+  const completionMid = (completionMin + completionMax) / 2;
+  const netAdvantageAbsMax = Math.max(
+    ...netAdvantageLines.flatMap((line) => line.values.map((value) => Math.abs(value))),
+  );
+
+  return `
+    <div class="layout sensitivity-charts">
+      ${renderSensitivityLineChart(
+        "胜率趋势",
+        "纵轴：胜率",
+        xAxisLabel,
+        xValues,
+        rateLines,
+        { min: 0, max: 1 },
+        [
+          { value: 1, label: "100%" },
+          { value: 0.5, label: "50%", emphasized: true },
+          { value: 0, label: "0%" },
+        ],
+        formatSignedCompactValue(state.sensitivityResult.sweep.start),
+        formatSignedCompactValue(state.sensitivityResult.sweep.end),
+        "胜率",
+        formatSummaryRate,
+      )}
+      ${renderSensitivityLineChart(
+        "平均终局净优势趋势",
+        "纵轴：平均终局净优势",
+        xAxisLabel,
+        xValues,
+        netAdvantageLines,
+        { min: -netAdvantageAbsMax, max: netAdvantageAbsMax },
+        [
+          { value: netAdvantageAbsMax, label: formatSignedSummaryRate(netAdvantageAbsMax) },
+          { value: 0, label: "0%", emphasized: true },
+          { value: -netAdvantageAbsMax, label: formatSignedSummaryRate(-netAdvantageAbsMax) },
+        ],
+        formatSignedCompactValue(state.sensitivityResult.sweep.start),
+        formatSignedCompactValue(state.sensitivityResult.sweep.end),
+        "平均终局净优势",
+        formatSignedSummaryRate,
+      )}
+      ${renderSensitivityLineChart(
+        `${completionLabel}趋势`,
+        `纵轴：${completionLabel}`,
+        xAxisLabel,
+        xValues,
+        [
+          {
+            id: "completion" as const,
+            className: "sensitivity-line-completion",
+            label: completionLabel,
+            values: completionValues,
+          },
+        ],
+        { min: completionMin, max: completionMax },
+        [
+          {
+            value: completionMax,
+            label:
+              state.draft.battle.actionResolutionMode === "turnBasedSpeed"
+                ? formatCompactValue(completionMax)
+                : formatTimelineMs(completionMax),
+          },
+          {
+            value: completionMid,
+            label:
+              state.draft.battle.actionResolutionMode === "turnBasedSpeed"
+                ? formatCompactValue(completionMid)
+                : formatTimelineMs(completionMid),
+            emphasized: true,
+          },
+          {
+            value: completionMin,
+            label:
+              state.draft.battle.actionResolutionMode === "turnBasedSpeed"
+                ? formatCompactValue(completionMin)
+                : formatTimelineMs(completionMin),
+          },
+        ],
+        formatSignedCompactValue(state.sensitivityResult.sweep.start),
+        formatSignedCompactValue(state.sensitivityResult.sweep.end),
+        completionLabel,
+        (value) =>
+          state.draft.battle.actionResolutionMode === "turnBasedSpeed" ? formatCompactValue(value) : formatTimelineMs(value),
+      )}
+    </div>
+  `;
+}
+
+function renderSensitivityTable() {
+  if (!state.sensitivityResult) {
+    return "";
+  }
+
+  const completionLabel = getSensitivityCompletionLabel();
+  return `
+    <div class="log-table-wrap">
+      <table class="log-table">
+        <thead>
+          <tr>
+            <th>点位</th>
+            <th>增幅值</th>
+            <th>结果值</th>
+            <th>${escapeHtml(state.draft.battle.teamNames.A)}胜率</th>
+            <th>${escapeHtml(state.draft.battle.teamNames.B)}胜率</th>
+            <th>平局率</th>
+            <th>${escapeHtml(state.draft.battle.teamNames.A)}净优势</th>
+            <th>${escapeHtml(state.draft.battle.teamNames.B)}净优势</th>
+            <th>${escapeHtml(completionLabel)}</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${state.sensitivityResult.points
+            .map(
+              (point) => `
+                <tr>
+                  <td>${point.index + 1}</td>
+                  <td>${escapeHtml(formatSignedCompactValue(point.value))}</td>
+                  <td>${escapeHtml(formatCompactValue(point.actualValue))}</td>
+                  <td>${formatSummaryRate(point.summary.winRates.A)}</td>
+                  <td>${formatSummaryRate(point.summary.winRates.B)}</td>
+                  <td>${formatSummaryRate(point.summary.drawRate)}</td>
+                  <td>${formatSignedSummaryRate(point.summary.averageTerminalNetAdvantages.A)}</td>
+                  <td>${formatSignedSummaryRate(point.summary.averageTerminalNetAdvantages.B)}</td>
+                  <td>${escapeHtml(getSensitivityCompletionValue(point.summary))}</td>
+                  <td>
+                    <button
+                      class="button button-ghost sensitivity-apply-button"
+                      data-action="apply-sensitivity-point"
+                      data-actual-value="${point.actualValue}"
+                      data-delta-value="${point.value}"
+                    >
+                      应用到单场
+                    </button>
+                  </td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderSummary() {
-  return state.simulationView === "single" ? renderSingleSummary() : renderBatchSummary();
+  if (state.simulationView === "single") {
+    return renderSingleSummary();
+  }
+  if (state.simulationView === "batch") {
+    return renderBatchSummary();
+  }
+  return renderSensitivitySummary();
 }
 
 function renderLogTable() {
@@ -2352,7 +3316,14 @@ function renderLogTable() {
 
 function renderMainPage() {
   const isSingleView = state.simulationView === "single";
-  const canExport = isSingleView ? state.result !== null : state.batchSummary !== null;
+  const isBatchView = state.simulationView === "batch";
+  const isSensitivityView = state.simulationView === "sensitivity";
+  const canExport =
+    state.simulationView === "single"
+      ? state.result !== null
+      : state.simulationView === "batch"
+        ? state.batchSummary !== null
+        : state.sensitivityResult !== null;
   const battleNumberFieldsHtml = battleConfigNumberMacros
     .map(
       (macro) => `
@@ -2382,11 +3353,11 @@ function renderMainPage() {
         <h1>基础战斗模拟器</h1>
         <p>
           当前版本已经支持统一时间轴下的两种行动结算模式、射速、弹匣、换弹、元素关系与多乘区伤害结算。
-          后续继续增加技能、状态和更复杂的时序规则时，可以直接在现有事件流和模拟引擎上迭代。
+          现在还额外支持单变量敏感性分析，可以直接对某个单位属性做增幅扫描，观察胜率、终局净优势和完成时间的变化。
         </p>
         ${renderHeroMeta([
           { label: "执行方式", tone: state.simulationMode === "local" ? "accent" : "blue", value: getSimulationModeLabel(state.simulationMode) },
-          { label: "当前视图", tone: "neutral", value: isSingleView ? "单场模拟" : `多场统计 · ${state.batchCount} 场` },
+          { label: "当前视图", tone: "neutral", value: getCurrentSimulationViewLabel() },
           { label: "行动结算", tone: "blue", value: actionResolutionModeLabels[state.draft.battle.actionResolutionMode] },
           { label: "目标策略", tone: "neutral", value: targetingStrategyLabels[state.draft.battle.targetingStrategy] },
         ])}
@@ -2403,7 +3374,9 @@ function renderMainPage() {
                 <button class="button button-ghost" data-action="import-draft">导入配置</button>
                 <button class="button button-ghost" data-action="export-draft">导出配置</button>
                 <input type="file" accept=".json,application/json" data-action="import-draft-file" hidden />
-                <button class="button button-primary" data-action="simulate" ${state.isSubmitting ? "disabled" : ""}>${state.isSubmitting ? "运行中..." : isSingleView ? "运行模拟" : "运行统计"}</button>
+                <button class="button button-primary" data-action="simulate" ${state.isSubmitting ? "disabled" : ""}>${
+                  state.isSubmitting ? "运行中..." : isSingleView ? "运行模拟" : isBatchView ? "运行统计" : "运行分析"
+                }</button>
               </div>
             </div>
             ${renderSimulationViewTabs()}
@@ -2468,7 +3441,7 @@ function renderMainPage() {
                     .join("")}
                 </select>
               </div>
-              ${isSingleView ? "" : `
+              ${isBatchView ? `
                 <div class="field">
                   <label>模拟场次</label>
                   <input
@@ -2481,8 +3454,9 @@ function renderMainPage() {
                     value="${state.batchCount}"
                   />
                 </div>
-              `}
+              ` : ""}
             </div>
+            ${renderSensitivityConfigSection()}
             ${renderMessage()}
           </div>
         </article>
@@ -2512,7 +3486,7 @@ function renderMainPage() {
         <article class="panel panel-results">
           <div class="panel-body">
             <div class="panel-header">
-              <h2 class="panel-title">${isSingleView ? "模拟结果" : "统计结果"}</h2>
+              <h2 class="panel-title">${isSingleView ? "模拟结果" : isBatchView ? "统计结果" : "分析结果"}</h2>
               <div class="toolbar">
                 <button class="button button-ghost" data-action="export-result" ${canExport ? "" : "disabled"}>导出结果</button>
               </div>
@@ -2520,6 +3494,28 @@ function renderMainPage() {
             ${renderSummary()}
           </div>
         </article>
+
+        ${isSensitivityView
+          ? `
+            <article class="panel panel-results">
+              <div class="panel-body">
+                <div class="panel-header">
+                  <h2 class="panel-title">趋势图</h2>
+                </div>
+                ${state.sensitivityResult ? renderSensitivityCharts() : `<p class="empty">运行分析后，这里会展示胜率、平均终局净优势和完成时间的趋势图。</p>`}
+              </div>
+            </article>
+
+            <article class="panel panel-log">
+              <div class="panel-body">
+                <div class="panel-header">
+                  <h2 class="panel-title">分析明细</h2>
+                </div>
+                ${state.sensitivityResult ? renderSensitivityTable() : `<p class="empty">运行分析后，这里会展示每个取值点的详细统计数据。</p>`}
+              </div>
+            </article>
+          `
+          : ""}
 
         ${isSingleView
           ? `
@@ -2792,6 +3788,43 @@ function bindEvents(container: HTMLElement) {
     renderApp(container);
   });
 
+  container.querySelector<HTMLSelectElement>("[data-action='update-sensitivity-unit']")?.addEventListener("change", (event) => {
+    const target = event.currentTarget as HTMLSelectElement;
+    updateSensitivityAxisUnit(target.value);
+    renderApp(container);
+  });
+
+  container.querySelector<HTMLSelectElement>("[data-action='update-sensitivity-field']")?.addEventListener("change", (event) => {
+    const target = event.currentTarget as HTMLSelectElement;
+    updateSensitivityAxisField(target.value);
+    renderApp(container);
+  });
+
+  container.querySelectorAll<HTMLInputElement>("[data-action='update-sensitivity-sweep']").forEach((input) => {
+    input.addEventListener("change", (event) => {
+      const target = event.currentTarget as HTMLInputElement;
+      const field = target.dataset.field as keyof BattleSensitivityConfig["sweep"] | undefined;
+      if (!field) {
+        return;
+      }
+      updateSensitivitySweepField(field, target.value);
+      renderApp(container);
+    });
+  });
+
+  container.querySelector<HTMLInputElement>("[data-action='update-sensitivity-battles']")?.addEventListener("change", (event) => {
+    const target = event.currentTarget as HTMLInputElement;
+    updateSensitivityBattlesPerPoint(target.value);
+    renderApp(container);
+  });
+
+  container.querySelectorAll<HTMLButtonElement>("[data-action='toggle-sensitivity-line']").forEach((button) => {
+    button.addEventListener("click", () => {
+      toggleSensitivityLineVisibility(button.dataset.lineId ?? "");
+      renderApp(container);
+    });
+  });
+
   container.querySelector<HTMLInputElement>("[data-action='update-backend-url']")?.addEventListener("change", (event) => {
     const target = event.currentTarget as HTMLInputElement;
     updateBackendBaseUrl(target.value);
@@ -2851,6 +3884,13 @@ function bindEvents(container: HTMLElement) {
   container.querySelector("[data-action='export-result']")?.addEventListener("click", async () => {
     await exportResult();
     renderApp(container);
+  });
+
+  container.querySelectorAll<HTMLButtonElement>("[data-action='apply-sensitivity-point']").forEach((button) => {
+    button.addEventListener("click", () => {
+      applySensitivityValueToDraft(button.dataset.actualValue ?? "", button.dataset.deltaValue ?? "");
+      renderApp(container);
+    });
   });
 
   container.querySelectorAll<HTMLInputElement>("[data-action='update-log-filter']").forEach((input) => {
@@ -2936,7 +3976,47 @@ function bindEvents(container: HTMLElement) {
     });
   });
 
+  bindSensitivityChartTooltips(container);
   applyLogFilters(container);
+}
+
+function bindSensitivityChartTooltips(container: HTMLElement) {
+  container.querySelectorAll<HTMLElement>(".sensitivity-chart-main").forEach((chartMain) => {
+    const tooltip = chartMain.querySelector<HTMLElement>(".sensitivity-chart-tooltip");
+    if (!tooltip) {
+      return;
+    }
+
+    const hideTooltip = () => {
+      tooltip.classList.remove("is-visible");
+      tooltip.textContent = "";
+    };
+
+    chartMain.addEventListener("mouseleave", hideTooltip);
+
+    chartMain.querySelectorAll<SVGRectElement>(".sensitivity-hover-band").forEach((band) => {
+      const showTooltip = () => {
+        const tooltipText = band.dataset.sensitivityTooltip;
+        if (!tooltipText) {
+          hideTooltip();
+          return;
+        }
+
+        tooltip.textContent = tooltipText;
+        const chartRect = chartMain.getBoundingClientRect();
+        const bandRect = band.getBoundingClientRect();
+        const anchorX = bandRect.left - chartRect.left + bandRect.width / 2;
+        const chartWidth = chartMain.clientWidth;
+        const clampedLeft = Math.min(Math.max(anchorX, 24), Math.max(24, chartWidth - 24));
+        tooltip.style.left = `${clampedLeft}px`;
+        tooltip.classList.add("is-visible");
+      };
+
+      band.addEventListener("mouseenter", showTooltip);
+      band.addEventListener("mousemove", showTooltip);
+      band.addEventListener("mouseleave", hideTooltip);
+    });
+  });
 }
 
 function bindSystemThemeListener() {

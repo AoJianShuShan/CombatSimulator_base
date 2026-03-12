@@ -10,10 +10,12 @@ await buildProject();
 
 const moduleUrl = pathToFileURL(path.join(rootDir, "dist", "simulator", "simulateBattle.js")).href;
 const batchModuleUrl = pathToFileURL(path.join(rootDir, "dist", "simulator", "simulateBattleBatch.js")).href;
+const sensitivityModuleUrl = pathToFileURL(path.join(rootDir, "dist", "simulator", "simulateBattleSensitivity.js")).href;
 const attributeMacroModuleUrl = pathToFileURL(path.join(rootDir, "dist", "domain", "attributeMacros.js")).href;
 const battleConfigMacroModuleUrl = pathToFileURL(path.join(rootDir, "dist", "domain", "battleConfigMacros.js")).href;
 const { simulateBattle } = await import(moduleUrl);
 const { simulateBattleBatchSummary } = await import(batchModuleUrl);
+const { simulateBattleSensitivity } = await import(sensitivityModuleUrl);
 const { createDefaultUnitStats } = await import(attributeMacroModuleUrl);
 const { battleNumberDefaults } = await import(battleConfigMacroModuleUrl);
 
@@ -125,6 +127,20 @@ const result = simulateBattle(input);
 const replayResult = simulateBattle(input);
 const batchResult = simulateBattleBatchSummary(input, 8);
 const singleBatchResult = simulateBattleBatchSummary(input, 1);
+const sensitivityResult = simulateBattleSensitivity({
+  input,
+  axis: {
+    scope: "unitStat",
+    unitId: "A-1",
+    field: "attack",
+  },
+  sweep: {
+    start: -2,
+    end: 2,
+    step: 2,
+  },
+  battlesPerPoint: 4,
+});
 const simultaneousDrawResult = simulateBattle({
   battle: {
     ...battleNumberDefaults,
@@ -506,6 +522,36 @@ if (
   singleBatchResult.averageTerminalNetAdvantages.B !== -expectedNetAdvantageA
 ) {
   throw new Error("count = 1 的批量摘要终局净优势统计不一致");
+}
+
+if (
+  sensitivityResult.pointCount !== 3 ||
+  sensitivityResult.totalBattles !== 12 ||
+  JSON.stringify(sensitivityResult.points.map((point) => point.value)) !== JSON.stringify([-2, 0, 2]) ||
+  JSON.stringify(sensitivityResult.points.map((point) => point.actualValue)) !== JSON.stringify([8, 10, 12])
+) {
+  throw new Error("敏感性分析基础结构异常");
+}
+
+const manualSensitivitySummary = simulateBattleBatchSummary(
+  {
+    ...input,
+    units: input.units.map((unit) =>
+      unit.id === "A-1"
+        ? {
+            ...unit,
+            stats: {
+              ...unit.stats,
+              attack: 8,
+            },
+          }
+        : unit
+    ),
+  },
+  4,
+);
+if (JSON.stringify(sensitivityResult.points[0]?.summary) !== JSON.stringify(manualSensitivitySummary)) {
+  throw new Error("敏感性分析取值点统计结果与手工批量统计不一致");
 }
 
 if (

@@ -1,4 +1,9 @@
 import type {
+  BattleSensitivityPointResult,
+  BattleSensitivityRequest,
+  BattleSensitivityResult,
+} from "../domain/analysis.ts";
+import type {
   BattleEvent,
   BattleBatchRequest,
   BattleBatchSummaryResult,
@@ -197,6 +202,58 @@ function parseBattleBatchSummaryResult(payload: unknown): BattleBatchSummaryResu
   return payload as BattleBatchSummaryResult;
 }
 
+function assertSensitivityAxis(value: unknown, label: string) {
+  assertPlainObject(value, label);
+  if (value.scope !== "unitStat") {
+    throw new Error(`${label}.scope 不支持: ${String(value.scope)}`);
+  }
+  assertString(value.unitId, `${label}.unitId`);
+  if (!unitAttributeMacros.some((macro) => macro.key === value.field)) {
+    throw new Error(`${label}.field 不支持: ${String(value.field)}`);
+  }
+}
+
+function assertSensitivitySweep(value: unknown, label: string) {
+  assertPlainObject(value, label);
+  assertFiniteNumber(value.start, `${label}.start`);
+  assertFiniteNumber(value.end, `${label}.end`);
+  assertFiniteNumber(value.step, `${label}.step`);
+}
+
+function parseBattleSensitivityPointResult(payload: unknown, index: number): BattleSensitivityPointResult {
+  assertPlainObject(payload, `points[${index}]`);
+  assertInteger(payload.index, `points[${index}].index`);
+  assertFiniteNumber(payload.value, `points[${index}].value`);
+  return {
+    index: payload.index,
+    value: payload.value,
+    summary: parseBattleBatchSummaryResult(payload.summary),
+  };
+}
+
+function parseBattleSensitivityResult(payload: unknown): BattleSensitivityResult {
+  assertPlainObject(payload, "后端敏感性分析响应");
+  assertInteger(payload.baseSeed, "baseSeed");
+  assertSensitivityAxis(payload.axis, "axis");
+  assertSensitivitySweep(payload.sweep, "sweep");
+  assertInteger(payload.pointCount, "pointCount");
+  assertInteger(payload.battlesPerPoint, "battlesPerPoint");
+  assertInteger(payload.totalBattles, "totalBattles");
+  if (!Array.isArray(payload.points)) {
+    throw new Error("points 必须是数组");
+  }
+
+  return {
+    baseSeed: payload.baseSeed,
+    axis: payload.axis as BattleSensitivityResult["axis"],
+    sweep: payload.sweep as BattleSensitivityResult["sweep"],
+    pointCount: payload.pointCount,
+    battlesPerPoint: payload.battlesPerPoint,
+    totalBattles: payload.totalBattles,
+    points: payload.points.map((point, index) => parseBattleSensitivityPointResult(point, index)),
+  };
+}
+
 function parseBackendHealth(payload: unknown): { status: string; service: string } {
   assertPlainObject(payload, "后端健康检查响应");
   assertString(payload.status, "status");
@@ -282,6 +339,44 @@ export async function simulateBattleBatchByApi(
   }
 
   return parseBattleBatchSummaryResult(payload);
+}
+
+export async function simulateBattleSensitivityByApi(
+  baseUrl: string,
+  request: BattleSensitivityRequest,
+  options: RequestOptions = {},
+): Promise<BattleSensitivityResult> {
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/simulate-sensitivity`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    let message = `后端敏感性分析失败：HTTP ${response.status}`;
+    try {
+      const payload = (await response.json()) as { message?: string };
+      if (payload.message) {
+        message = payload.message;
+      }
+    } catch {
+      return Promise.reject(new Error(message));
+    }
+
+    throw new Error(message);
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("后端敏感性分析返回了无法解析的 JSON 响应");
+  }
+
+  return parseBattleSensitivityResult(payload);
 }
 
 export async function fetchBackendHealth(

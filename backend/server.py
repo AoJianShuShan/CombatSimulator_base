@@ -6,8 +6,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from backend.simulator import simulate_battle, simulate_battle_batch_summary
-from backend.validation import validate_battle_batch_request, validate_battle_input
+from backend.simulator import simulate_battle, simulate_battle_batch_summary, simulate_battle_sensitivity
+from backend.validation import validate_battle_batch_request, validate_battle_input, validate_battle_sensitivity_request
 
 
 DEFAULT_HOST = os.getenv("HOST", "127.0.0.1")
@@ -38,7 +38,7 @@ class BattleRequestHandler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
-        if self.path not in {"/simulate", "/simulate-batch"}:
+        if self.path not in {"/simulate", "/simulate-batch", "/simulate-sensitivity"}:
             self._send_json(HTTPStatus.NOT_FOUND, {"message": "Not Found"})
             return
 
@@ -47,9 +47,12 @@ class BattleRequestHandler(BaseHTTPRequestHandler):
             if self.path == "/simulate":
                 validate_battle_input(payload)
                 result = simulate_battle(payload)
-            else:
+            elif self.path == "/simulate-batch":
                 validate_battle_batch_request(payload)
                 result = simulate_battle_batch_summary(payload["input"], int(payload["count"]))
+            else:
+                validate_battle_sensitivity_request(payload)
+                result = simulate_battle_sensitivity(payload)
         except (OverflowError, ValueError) as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"message": str(error)})
             return

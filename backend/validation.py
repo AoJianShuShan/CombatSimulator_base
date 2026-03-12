@@ -13,8 +13,13 @@ SUPPORTED_ACTION_RESOLUTION_MODES = {"arpgSimultaneous", "turnBasedSpeed"}
 SUPPORTED_UNIT_POSITIONS = {"front", "middle", "back"}
 SUPPORTED_ATTACK_ELEMENTS = {"none", "physical", "fire", "electromagnetic", "corrosive"}
 SUPPORTED_PROTECTION_TYPES = {"none", "heatArmor", "insulatedArmor", "bioArmor", "heavyArmor"}
+SUPPORTED_SENSITIVITY_AXIS_SCOPES = {"unitStat"}
 BATTLE_BATCH_COUNT_MIN = 1
 BATTLE_BATCH_COUNT_MAX = 5000
+SENSITIVITY_BATTLES_PER_POINT_MIN = 1
+SENSITIVITY_BATTLES_PER_POINT_MAX = 5000
+SENSITIVITY_MAX_POINT_COUNT = 100
+SENSITIVITY_MAX_TOTAL_BATTLES = 100000
 
 
 def _require_object(value: Any, field_name: str) -> dict[str, Any]:
@@ -92,6 +97,37 @@ def validate_battle_batch_request(payload: dict[str, Any]) -> None:
     validate_battle_input(input_payload)
 
 
+def validate_battle_sensitivity_request(payload: dict[str, Any]) -> None:
+    input_payload = _require_object(payload.get("input"), "input")
+    validate_battle_input(input_payload)
+
+    axis = _require_object(payload.get("axis"), "axis")
+    sweep = _require_object(payload.get("sweep"), "sweep")
+    battles_per_point = _require_integer(payload.get("battlesPerPoint"), "battlesPerPoint")
+
+    axis_scope = axis.get("scope")
+    if axis_scope not in SUPPORTED_SENSITIVITY_AXIS_SCOPES:
+        raise ValueError(f"axis.scope 不支持: {axis_scope}")
+
+    if battles_per_point < SENSITIVITY_BATTLES_PER_POINT_MIN:
+        raise ValueError(f"battlesPerPoint 必须大于等于 {SENSITIVITY_BATTLES_PER_POINT_MIN}")
+
+    if battles_per_point > SENSITIVITY_BATTLES_PER_POINT_MAX:
+        raise ValueError(f"battlesPerPoint 必须小于等于 {SENSITIVITY_BATTLES_PER_POINT_MAX}")
+
+    if axis_scope == "unitStat":
+        _validate_unit_stat_sensitivity_axis(axis, input_payload)
+
+    point_count = _validate_sensitivity_sweep(sweep, axis, input_payload)
+
+    if point_count > SENSITIVITY_MAX_POINT_COUNT:
+        raise ValueError(f"敏感性分析扫描点数必须小于等于 {SENSITIVITY_MAX_POINT_COUNT}")
+
+    total_battles = point_count * battles_per_point
+    if total_battles > SENSITIVITY_MAX_TOTAL_BATTLES:
+        raise ValueError(f"敏感性分析总模拟次数必须小于等于 {SENSITIVITY_MAX_TOTAL_BATTLES}")
+
+
 def _validate_battle_config(battle: dict[str, Any]) -> None:
     targeting_strategy = battle.get("targetingStrategy")
     action_resolution_mode = battle.get("actionResolutionMode")
@@ -119,6 +155,83 @@ def _validate_battle_config(battle: dict[str, Any]) -> None:
 
     for team_id in sorted(SUPPORTED_TEAM_IDS):
         _require_string(team_names.get(team_id), f"battle.teamNames.{team_id}")
+
+
+def _validate_unit_stat_sensitivity_axis(axis: dict[str, Any], input_payload: dict[str, Any]) -> None:
+    unit_id = _require_string(axis.get("unitId"), "axis.unitId")
+    field = _require_string(axis.get("field"), "axis.field")
+    attribute_macros = get_unit_attribute_macros()
+    macro_map = {str(macro["key"]): macro for macro in attribute_macros}
+
+    if field not in macro_map:
+        raise ValueError(f"axis.field 不支持: {field}")
+
+    units = _require_list(input_payload.get("units"), "input.units")
+    if not any(isinstance(unit, dict) and unit.get("id") == unit_id for unit in units):
+        raise ValueError(f"axis.unitId 不存在: {unit_id}")
+
+
+def _get_sensitivity_target_unit(axis: dict[str, Any], input_payload: dict[str, Any]) -> dict[str, Any]:
+    unit_id = str(axis["unitId"])
+    units = _require_list(input_payload.get("units"), "input.units")
+    for unit in units:
+        if isinstance(unit, dict) and unit.get("id") == unit_id:
+            return unit
+
+    raise ValueError(f"axis.unitId 不存在: {unit_id}")
+
+
+def _validate_sensitivity_delta_value(
+    delta_value: float,
+    field_name: str,
+    axis: dict[str, Any],
+    input_payload: dict[str, Any],
+) -> None:
+    field = str(axis["field"])
+    macro_map = {str(macro["key"]): macro for macro in get_unit_attribute_macros()}
+    macro = macro_map[field]
+    target_unit = _get_sensitivity_target_unit(axis, input_payload)
+    stats = _require_object(target_unit.get("stats"), "targetUnit.stats")
+    base_value = float(_require_number(stats.get(field), f"targetUnit.stats.{field}"))
+
+    if not _is_aligned_to_step(delta_value, float(macro["step"])):
+        raise ValueError(f"{field_name} 必须按步进 {macro['step']} 输入")
+
+    actual_value = base_value + delta_value
+    if actual_value < float(macro["min"]):
+        raise ValueError(
+            f"{field_name} 增幅后的 {macro['label']} 不能小于 {macro['min']}（当前基准值 {base_value}，结果值 {actual_value}）"
+        )
+
+
+def _validate_sensitivity_sweep(
+    sweep: dict[str, Any],
+    axis: dict[str, Any],
+    input_payload: dict[str, Any],
+) -> int:
+    start = float(_require_number(sweep.get("start"), "sweep.start"))
+    end = float(_require_number(sweep.get("end"), "sweep.end"))
+    step = float(_require_number(sweep.get("step"), "sweep.step"))
+
+    if step <= 0:
+        raise ValueError("sweep.step 必须大于 0")
+
+    if axis.get("scope") == "unitStat":
+        field = str(axis["field"])
+        macro_map = {str(macro["key"]): macro for macro in get_unit_attribute_macros()}
+        macro = macro_map[field]
+
+        _validate_sensitivity_delta_value(start, "sweep.start", axis, input_payload)
+        _validate_sensitivity_delta_value(end, "sweep.end", axis, input_payload)
+
+        if not _is_aligned_to_step(step, float(macro["step"])):
+            raise ValueError(f"sweep.step 必须按步进 {macro['step']} 输入")
+
+    distance = abs(end - start)
+    if not _is_aligned_to_step(distance, step):
+        raise ValueError("敏感性分析范围与步进不匹配，无法整除生成取值点")
+
+    return int(round(distance / step)) + 1
 
 
 def _validate_units(units: list[Any]) -> None:

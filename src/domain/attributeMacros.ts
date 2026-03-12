@@ -1,4 +1,4 @@
-type UnitStatKey =
+export type UnitStatKey =
   | "maxHp"
   | "maxHpRate"
   | "attack"
