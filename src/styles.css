@@ -26,6 +26,13 @@
   --focus-ring: 0 0 0 3px rgba(180, 84, 48, 0.16);
   --scrollbar-thumb: rgba(111, 88, 57, 0.36);
   --scrollbar-track: rgba(255, 255, 255, 0.42);
+  --surface-overlay: rgba(25, 18, 12, 0.28);
+  --surface-dialog: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 248, 240, 0.94));
+  --surface-inner: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 250, 243, 0.74));
+  --surface-section: rgba(255, 254, 249, 0.7);
+  --surface-input: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 240, 0.92));
+  --surface-inline: #fffef9;
+  --text-on-accent: #fffaf5;
 }
 
 :root[data-theme="dark"] {
@@ -56,6 +63,13 @@
   --focus-ring: 0 0 0 3px rgba(209, 125, 82, 0.24);
   --scrollbar-thumb: rgba(139, 170, 205, 0.34);
   --scrollbar-track: rgba(10, 15, 22, 0.55);
+  --surface-overlay: rgba(4, 8, 12, 0.62);
+  --surface-dialog: linear-gradient(180deg, rgba(24, 34, 44, 0.98), rgba(15, 22, 30, 0.97));
+  --surface-inner: linear-gradient(180deg, rgba(19, 28, 37, 0.96), rgba(13, 19, 26, 0.94));
+  --surface-section: rgba(255, 255, 255, 0.03);
+  --surface-input: linear-gradient(180deg, rgba(17, 25, 33, 0.98), rgba(13, 19, 26, 0.96));
+  --surface-inline: rgba(255, 255, 255, 0.05);
+  --text-on-accent: #f8fbff;
 }
 
 html {
@@ -162,7 +176,7 @@ select:focus-visible {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(25, 18, 12, 0.28);
+  background: var(--surface-overlay);
   backdrop-filter: blur(8px);
 }
 
@@ -174,7 +188,7 @@ select:focus-visible {
   border: 1px solid var(--line-strong);
   border-radius: 26px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 248, 240, 0.94)),
+    var(--surface-dialog),
     var(--panel-strong);
   box-shadow: var(--shadow);
   text-align: center;
@@ -251,7 +265,7 @@ select:focus-visible {
 }
 
 .theme-switcher-button.is-active {
-  color: white;
+  color: var(--text-on-accent);
   border-color: rgba(255, 255, 255, 0.14);
   background: linear-gradient(135deg, var(--accent), var(--blue));
   box-shadow: 0 10px 22px rgba(56, 38, 17, 0.16);
@@ -655,7 +669,7 @@ select:focus-visible {
   border: 1px solid var(--line-strong);
   border-radius: 14px;
   padding: 10px 12px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 250, 243, 0.92));
+  background: var(--surface-input);
   font-size: 0.98rem;
   font-weight: 500;
   text-align: center;
@@ -715,7 +729,7 @@ select:focus-visible {
   padding: 10px 12px;
   border: 1px solid rgba(30, 29, 26, 0.08);
   border-radius: 16px;
-  background: rgba(255, 254, 249, 0.7);
+  background: var(--surface-section);
 }
 
 .unit-attribute-section-header h3 {
@@ -745,7 +759,7 @@ select:focus-visible {
   border-radius: 12px;
   background:
     linear-gradient(180deg, rgba(45, 92, 136, 0.08), rgba(45, 92, 136, 0.04)),
-    #fffef9;
+    var(--surface-inline);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
@@ -792,7 +806,7 @@ select:focus-visible {
   border: 1px solid var(--line-strong);
   border-radius: 14px;
   padding: 10px 12px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 240, 0.92));
+  background: var(--surface-input);
   color: var(--text);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
 }
@@ -802,9 +816,14 @@ select:focus-visible {
   border: 1px solid var(--line-strong);
   border-radius: 14px;
   padding: 10px 12px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 240, 0.92));
+  background: var(--surface-input);
   color: var(--text);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.field select option {
+  background: var(--panel-strong);
+  color: var(--text);
 }
 
 .field input[type="number"] {
@@ -907,7 +926,7 @@ select:focus-visible {
 }
 
 .view-switch-button.is-active {
-  color: white;
+  color: var(--text-on-accent);
   border-color: rgba(255, 255, 255, 0.18);
   background: linear-gradient(135deg, var(--accent), #cf6a45);
   box-shadow: 0 12px 24px rgba(180, 84, 48, 0.24);
@@ -947,7 +966,7 @@ select:focus-visible {
 
 .button-primary {
   background: linear-gradient(135deg, var(--accent), #d06d46);
-  color: white;
+  color: var(--text-on-accent);
   border-color: rgba(255, 255, 255, 0.12);
 }
 
@@ -990,7 +1009,7 @@ select:focus-visible {
   padding: 1px 8px;
   text-align: left;
   border-radius: 10px;
-  background: #fffef9;
+  background: var(--surface-inline);
 }
 
 .replay-panel {
@@ -1025,7 +1044,7 @@ select:focus-visible {
 
 .panel-inner {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 250, 243, 0.74)),
+    var(--surface-inner),
     transparent;
   box-shadow: none;
 }
@@ -1167,7 +1186,7 @@ select:focus-visible {
   min-height: 22px;
   padding: 1px 8px;
   border-radius: 10px;
-  background: #fffef9;
+  background: var(--surface-inline);
 }
 
 .summary-item.unit-quick-stat span,
@@ -1353,6 +1372,11 @@ select:focus-visible {
   background: rgba(255, 255, 255, 0.04);
 }
 
+:root[data-theme="dark"] .theme-switcher-button,
+:root[data-theme="dark"] .view-switch-button {
+  color: var(--muted-strong);
+}
+
 :root[data-theme="dark"] .theme-switcher-button.is-active {
   border-color: rgba(255, 255, 255, 0.08);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.26);
@@ -1473,12 +1497,25 @@ select:focus-visible {
 :root[data-theme="dark"] .field input,
 :root[data-theme="dark"] .field select {
   border-color: rgba(161, 185, 213, 0.22);
-  background: linear-gradient(180deg, rgba(17, 25, 33, 0.98), rgba(13, 19, 26, 0.96));
+  background: var(--surface-input);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+:root[data-theme="dark"] .unit-name-input:disabled,
+:root[data-theme="dark"] .field input:disabled,
+:root[data-theme="dark"] .field select:disabled {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  -webkit-text-fill-color: var(--muted);
 }
 
 :root[data-theme="dark"] .field input::placeholder {
   color: rgba(191, 208, 228, 0.54);
+}
+
+:root[data-theme="dark"] .field select option {
+  background: #0f161d;
+  color: var(--text);
 }
 
 :root[data-theme="dark"] .field input[type="range"] {
@@ -1503,7 +1540,7 @@ select:focus-visible {
 
 :root[data-theme="dark"] .unit-attribute-section {
   border-color: rgba(161, 185, 213, 0.14);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--surface-section);
 }
 
 :root[data-theme="dark"] .summary-item,
@@ -1528,6 +1565,21 @@ select:focus-visible {
     linear-gradient(180deg, rgba(21, 30, 39, 0.94), rgba(15, 22, 30, 0.94)),
     rgba(255, 255, 255, 0.02);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .button-secondary {
+  background: linear-gradient(180deg, rgba(209, 125, 82, 0.2), rgba(209, 125, 82, 0.1));
+  border-color: rgba(209, 125, 82, 0.2);
+}
+
+:root[data-theme="dark"] .button-ghost {
+  background: linear-gradient(180deg, rgba(94, 151, 199, 0.2), rgba(94, 151, 199, 0.1));
+  border-color: rgba(94, 151, 199, 0.2);
+}
+
+:root[data-theme="dark"] .button-danger {
+  background: linear-gradient(180deg, rgba(238, 143, 143, 0.18), rgba(238, 143, 143, 0.08));
+  border-color: rgba(238, 143, 143, 0.18);
 }
 
 :root[data-theme="dark"] .view-switch-button.is-active,
@@ -1582,6 +1634,16 @@ select:focus-visible {
 
 :root[data-theme="dark"] .badge-neutral {
   background: rgba(255, 255, 255, 0.05);
+}
+
+:root[data-theme="dark"] .badge-a {
+  background: linear-gradient(180deg, rgba(209, 125, 82, 0.2), rgba(209, 125, 82, 0.12));
+  border-color: rgba(209, 125, 82, 0.18);
+}
+
+:root[data-theme="dark"] .badge-b {
+  background: linear-gradient(180deg, rgba(94, 151, 199, 0.2), rgba(94, 151, 199, 0.12));
+  border-color: rgba(94, 151, 199, 0.18);
 }
 
 :root[data-theme="dark"] .message-success,
