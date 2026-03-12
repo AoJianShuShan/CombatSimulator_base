@@ -48,6 +48,10 @@ function roundToFour(value) {
   return Math.round(value * 10000) / 10000;
 }
 
+function clampRage(value) {
+  return Math.min(100, Math.max(0, roundToFour(value)));
+}
+
 function clampPercentage(value) {
   return Math.min(100, Math.max(0, value));
 }
@@ -82,6 +86,22 @@ function getReloadTimeMs(stats) {
 
 function getMagazineCapacity(stats) {
   return Math.max(1, Math.trunc(stats[unitStatRoleKeys.magazineCapacity]));
+}
+
+function getSkillCooldownRounds(stats) {
+  return Math.max(0, Math.trunc(stats[unitStatRoleKeys.skillCooldownRounds]));
+}
+
+function getRageRecoverySpeed(stats) {
+  return Math.max(0, stats[unitStatRoleKeys.rageRecoverySpeed]);
+}
+
+function getActionType(actionResolutionMode, round, currentRage, nextSkillReadyRound) {
+  if (actionResolutionMode === "turnBasedSpeed") {
+    return round >= nextSkillReadyRound ? "skill" : "normal";
+  }
+
+  return currentRage >= 100 ? "skill" : "normal";
 }
 
 function getArmorReductionRate(input, actor, target) {
@@ -344,12 +364,18 @@ function computeExpectedFirstAction(input) {
   const baseDamage = Math.max(input.battle.minimumDamage, effectiveAttack - effectiveDefense);
   const armorReductionRate = getArmorReductionRate(input, actor, target);
   const { relation: elementRelation, multiplier: elementMultiplier } = getElementRelation(input, actor, target);
+  const firstActionType = getActionType(
+    input.battle.actionResolutionMode,
+    1,
+    input.battle.actionResolutionMode === "arpgSimultaneous" ? clampRage(input.battle.initialRage) : 0,
+    1,
+  );
   const criticalMultiplier = isCritical ? actor.stats[unitStatRoleKeys.critMultiplier] / 100 : 1;
   const headshotMultiplier = isHeadshot ? actor.stats[unitStatRoleKeys.headshotMultiplier] / 100 : 1;
   const scenarioMultiplier = 1 + actor.stats[unitStatRoleKeys.scenarioDamageBonus] / 100;
   const heroClassMultiplier = 1 + actor.stats[unitStatRoleKeys.heroClassDamageBonus] / 100;
   const skillTypeMultiplier = 1 + actor.stats[unitStatRoleKeys.skillTypeDamageBonus] / 100;
-  const skillMultiplier = actor.stats[unitStatRoleKeys.skillMultiplier] / 100;
+  const skillMultiplier = firstActionType === "skill" ? actor.stats[unitStatRoleKeys.skillMultiplier] / 100 : 1;
   const outputMultiplier = clampMultiplier(
     1 + (actor.stats[unitStatRoleKeys.outputAmplify] - actor.stats[unitStatRoleKeys.outputDecay]) / 100,
   );
@@ -385,6 +411,43 @@ function computeExpectedFirstAction(input) {
   const nextAttackTimeMs = fireIntervalMs;
   const secondTurnTimelineMs =
     remainingAmmoAfterFirstShot === 0 ? Math.max(fireIntervalMs, getReloadTimeMs(actor.stats)) : fireIntervalMs;
+  const secondActionType =
+    input.battle.maxRounds >= 2
+      ? input.battle.actionResolutionMode === "turnBasedSpeed"
+        ? getActionType("turnBasedSpeed", 2, 0, firstActionType === "skill" ? 2 + getSkillCooldownRounds(actor.stats) : 1)
+        : getActionType(
+            "arpgSimultaneous",
+            2,
+            clampRage(
+              (firstActionType === "skill" ? 0 : input.battle.initialRage) +
+                (secondTurnTimelineMs * getRageRecoverySpeed(actor.stats)) / 1000,
+            ),
+            1,
+          )
+      : null;
+  const secondActionSkillMultiplier =
+    secondActionType === null
+      ? null
+      : secondActionType === "skill"
+        ? actor.stats[unitStatRoleKeys.skillMultiplier] / 100
+        : 1;
+  const secondDamageBeforeRound =
+    secondActionSkillMultiplier === null
+      ? null
+      : baseDamage *
+        (1 - armorReductionRate) *
+        criticalMultiplier *
+        headshotMultiplier *
+        elementMultiplier *
+        scenarioMultiplier *
+        heroClassMultiplier *
+        skillTypeMultiplier *
+        secondActionSkillMultiplier *
+        outputMultiplier *
+        damageTakenMultiplier *
+        finalDamageMultiplier;
+  const secondActionDamage =
+    secondDamageBeforeRound === null ? null : Math.max(input.battle.minimumDamage, roundHalfUp(secondDamageBeforeRound));
 
   return {
     armorGap: Math.max(0, target.stats[unitStatRoleKeys.armor] - actor.stats[unitStatRoleKeys.armorPenetration]),
@@ -401,6 +464,9 @@ function computeExpectedFirstAction(input) {
     elementRelation,
     finalDamageMultiplier,
     firstTurnActorId: actor.id,
+    focusFirstActionType: firstActionType,
+    focusSecondActionDamage: secondActionDamage,
+    focusSecondActionType: secondActionType,
     focusActorTurnIndex: focusActorTurnIndex >= 0 ? focusActorTurnIndex + 1 : null,
     headshotMultiplier,
     heroClassMultiplier,
@@ -432,6 +498,7 @@ function collectActualFirstAction(input, result) {
   const damageEvent = firstResolutionEvent?.type === "damage_applied" ? firstResolutionEvent : null;
   const focusActorTurnIndex = turnEvents.findIndex((event) => event.actorId === ACTOR_ID);
   const actorTurnEvents = turnEvents.filter((event) => event.actorId === ACTOR_ID);
+  const actorDamageEvents = result.events.filter((event) => event.type === "damage_applied" && event.actorId === ACTOR_ID);
   const reloadStartedEvent = result.events.find((event) => event.type === "reload_started" && event.actorId === ACTOR_ID) ?? null;
   const reloadCompletedEvent = result.events.find((event) => event.type === "reload_completed" && event.actorId === ACTOR_ID) ?? null;
 
@@ -472,6 +539,16 @@ function collectActualFirstAction(input, result) {
         ? damageEvent.payload.finalDamageMultiplier / 100
         : expected.finalDamageMultiplier,
     firstTurnActorId: turnEvents[0]?.actorId ?? expected.firstTurnActorId,
+    focusFirstActionType:
+      actorTurnEvents[0]?.payload?.actionType === "skill" || actorTurnEvents[0]?.payload?.actionType === "normal"
+        ? actorTurnEvents[0].payload.actionType
+        : expected.focusFirstActionType,
+    focusSecondActionDamage:
+      typeof actorDamageEvents[1]?.payload?.damage === "number" ? actorDamageEvents[1].payload.damage : expected.focusSecondActionDamage,
+    focusSecondActionType:
+      actorTurnEvents[1]?.payload?.actionType === "skill" || actorTurnEvents[1]?.payload?.actionType === "normal"
+        ? actorTurnEvents[1].payload.actionType
+        : expected.focusSecondActionType,
     focusActorTurnIndex: focusActorTurnIndex >= 0 ? focusActorTurnIndex + 1 : expected.focusActorTurnIndex,
     currentAmmoBeforeFirstShot:
       typeof actorTurnEvents[0]?.payload?.currentAmmo === "number"
@@ -552,6 +629,9 @@ function normalizeForComparison(snapshot) {
     elementRelation: snapshot.elementRelation ?? null,
     finalDamageMultiplier: snapshot.finalDamageMultiplier == null ? null : roundToFour(snapshot.finalDamageMultiplier),
     firstTurnActorId: snapshot.firstTurnActorId ?? null,
+    focusFirstActionType: snapshot.focusFirstActionType ?? null,
+    focusSecondActionDamage: snapshot.focusSecondActionDamage ?? null,
+    focusSecondActionType: snapshot.focusSecondActionType ?? null,
     focusActorTurnIndex: snapshot.focusActorTurnIndex ?? null,
     currentAmmoBeforeFirstShot: snapshot.currentAmmoBeforeFirstShot ?? null,
     headshotMultiplier: snapshot.headshotMultiplier == null ? null : roundToFour(snapshot.headshotMultiplier),
@@ -739,6 +819,17 @@ const inspectSkillMultiplier = (snapshot) => ({
   实际伤害: snapshot.damage,
 });
 
+const inspectSkillCooldown = (snapshot) => ({
+  首次动作类型: snapshot.focusFirstActionType,
+  第二次动作类型: snapshot.focusSecondActionType,
+});
+
+const inspectRageRecovery = (snapshot) => ({
+  首次动作类型: snapshot.focusFirstActionType,
+  第二次动作类型: snapshot.focusSecondActionType,
+  第二次伤害: snapshot.focusSecondActionDamage,
+});
+
 const inspectOutput = (snapshot) => ({
   输出乘区: formatRatioPercent(snapshot.outputMultiplier),
   实际伤害: snapshot.damage,
@@ -840,6 +931,33 @@ const auditCases = [
   makeStatCase({ key: "finalDamageBonus", label: "最终增伤%", side: "actor", before: 0, after: 50, inspect: inspectFinal, expect: (before, after) => after.damage > before.damage }),
   makeStatCase({ key: "finalDamageReduction", label: "最终减伤%", side: "target", before: 0, after: 50, inspect: inspectFinal, expect: (before, after) => after.damage < before.damage }),
   makeStatCase({ key: "skillMultiplier", label: "技能倍率%", side: "actor", before: 100, after: 150, inspect: inspectSkillMultiplier, expect: (before, after) => after.damage > before.damage }),
+  makeStatCase({
+    key: "skillCooldownRounds",
+    label: "回合CD",
+    side: "actor",
+    before: 0,
+    after: 2,
+    battle: { maxRounds: 2, actionResolutionMode: "turnBasedSpeed" },
+    actorStats: { skillMultiplier: 200, fireRate: 60 },
+    targetStats: { maxHp: 200, attack: 0 },
+    inspect: inspectSkillCooldown,
+    expect: (before, after) => before.focusSecondActionType === "skill" && after.focusSecondActionType === "normal",
+  }),
+  makeStatCase({
+    key: "rageRecoverySpeed",
+    label: "怒气恢复速度（点/s）",
+    side: "actor",
+    before: 0,
+    after: 20,
+    battle: { maxRounds: 2, actionResolutionMode: "arpgSimultaneous", initialRage: 80 },
+    actorStats: { skillMultiplier: 300, fireRate: 60 },
+    targetStats: { maxHp: 200, attack: 0 },
+    inspect: inspectRageRecovery,
+    expect: (before, after) =>
+      before.focusSecondActionType === "normal" &&
+      after.focusSecondActionType === "skill" &&
+      after.focusSecondActionDamage > before.focusSecondActionDamage,
+  }),
   makeStatCase({ key: "outputAmplify", label: "输出增幅%", side: "actor", before: 0, after: 50, inspect: inspectOutput, expect: (before, after) => after.damage > before.damage }),
   makeStatCase({ key: "outputDecay", label: "输出衰减%", side: "actor", before: 0, after: 50, inspect: inspectOutput, expect: (before, after) => after.damage < before.damage }),
   makeStatCase({ key: "damageTakenAmplify", label: "承伤加深%", side: "target", before: 0, after: 50, inspect: inspectDamageTaken, expect: (before, after) => after.damage > before.damage }),

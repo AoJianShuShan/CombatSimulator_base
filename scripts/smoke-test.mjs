@@ -11,11 +11,13 @@ await buildProject();
 const moduleUrl = pathToFileURL(path.join(rootDir, "dist", "simulator", "simulateBattle.js")).href;
 const batchModuleUrl = pathToFileURL(path.join(rootDir, "dist", "simulator", "simulateBattleBatch.js")).href;
 const sensitivityModuleUrl = pathToFileURL(path.join(rootDir, "dist", "simulator", "simulateBattleSensitivity.js")).href;
+const apiModuleUrl = pathToFileURL(path.join(rootDir, "dist", "ui", "api.js")).href;
 const attributeMacroModuleUrl = pathToFileURL(path.join(rootDir, "dist", "domain", "attributeMacros.js")).href;
 const battleConfigMacroModuleUrl = pathToFileURL(path.join(rootDir, "dist", "domain", "battleConfigMacros.js")).href;
 const { simulateBattle } = await import(moduleUrl);
 const { simulateBattleBatchSummary } = await import(batchModuleUrl);
 const { simulateBattleSensitivity } = await import(sensitivityModuleUrl);
+const { simulateBattleSensitivityByApi } = await import(apiModuleUrl);
 const { createDefaultUnitStats } = await import(attributeMacroModuleUrl);
 const { battleNumberDefaults } = await import(battleConfigMacroModuleUrl);
 
@@ -141,6 +143,33 @@ const sensitivityResult = simulateBattleSensitivity({
   },
   battlesPerPoint: 4,
 });
+const originalFetch = globalThis.fetch;
+let apiSensitivityResult;
+try {
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify(sensitivityResult), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  apiSensitivityResult = await simulateBattleSensitivityByApi("http://127.0.0.1:65535", {
+    input,
+    axis: {
+      scope: "unitStat",
+      unitId: "A-1",
+      field: "attack",
+    },
+    sweep: {
+      start: -2,
+      end: 2,
+      step: 2,
+    },
+    battlesPerPoint: 4,
+  });
+} finally {
+  globalThis.fetch = originalFetch;
+}
 const simultaneousDrawResult = simulateBattle({
   battle: {
     ...battleNumberDefaults,
@@ -461,6 +490,177 @@ const maxBattleTimeResult = simulateBattle({
     },
   ],
 });
+const turnBasedSkillCooldownResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 3,
+    minimumDamage: 1,
+    randomSeed: 20260317,
+    targetingStrategy: "front",
+    actionResolutionMode: "turnBasedSpeed",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "技能红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 200,
+        attack: 10,
+        defense: 0,
+        speed: 10,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+        skillMultiplier: 200,
+        skillCooldownRounds: 1,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "靶子蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 200,
+        attack: 0,
+        defense: 0,
+        speed: 1,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
+const timelineRageSkillResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 2,
+    minimumDamage: 1,
+    randomSeed: 20260318,
+    initialRage: 80,
+    targetingStrategy: "front",
+    actionResolutionMode: "arpgSimultaneous",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "怒气红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 200,
+        attack: 10,
+        defense: 0,
+        speed: 1,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+        skillMultiplier: 300,
+        rageRecoverySpeed: 20,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "怒气蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 200,
+        attack: 0,
+        defense: 0,
+        speed: 1,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+        rageRecoverySpeed: 0,
+      },
+    },
+  ],
+});
+const skillNoAmmoConsumeResult = simulateBattle({
+  battle: {
+    ...battleNumberDefaults,
+    maxRounds: 2,
+    minimumDamage: 1,
+    randomSeed: 20260319,
+    targetingStrategy: "front",
+    actionResolutionMode: "turnBasedSpeed",
+    teamNames: {
+      A: "红队",
+      B: "蓝队",
+    },
+  },
+  units: [
+    {
+      id: "A-1",
+      teamId: "A",
+      name: "技能不耗弹红方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 200,
+        attack: 10,
+        defense: 0,
+        speed: 10,
+        fireRate: 60,
+        reloadTimeMs: 800,
+        magazineCapacity: 1,
+        hitChance: 100,
+        dodgeChance: 0,
+        skillMultiplier: 200,
+        skillCooldownRounds: 1,
+      },
+    },
+    {
+      id: "B-1",
+      teamId: "B",
+      name: "技能靶子蓝方",
+      position: "front",
+      attackElement: "none",
+      protectionType: "none",
+      stats: {
+        ...createDefaultUnitStats(),
+        maxHp: 200,
+        attack: 0,
+        defense: 0,
+        speed: 1,
+        fireRate: 60,
+        magazineCapacity: 30,
+        hitChance: 100,
+        dodgeChance: 0,
+      },
+    },
+  ],
+});
 
 if (JSON.stringify(result) !== JSON.stringify(replayResult)) {
   throw new Error("相同随机种子未得到完全一致的战斗结果");
@@ -531,6 +731,10 @@ if (
   JSON.stringify(sensitivityResult.points.map((point) => point.actualValue)) !== JSON.stringify([8, 10, 12])
 ) {
   throw new Error("敏感性分析基础结构异常");
+}
+
+if (JSON.stringify(apiSensitivityResult.points.map((point) => point.actualValue)) !== JSON.stringify([8, 10, 12])) {
+  throw new Error("前端 API 解析敏感性分析结果时丢失 actualValue");
 }
 
 const manualSensitivitySummary = simulateBattleBatchSummary(
@@ -614,6 +818,49 @@ if (
   throw new Error("最大战斗时长未正确限制时间轴推进");
 }
 
+const turnBasedSkillActionSequence = turnBasedSkillCooldownResult.events
+  .filter((event) => event.type === "damage_applied" && event.actorId === "A-1")
+  .map((event) => `${event.payload?.actionType ?? "?"}:${event.payload?.damage ?? "?"}`)
+  .join("|");
+if (turnBasedSkillActionSequence !== "skill:20|normal:10|skill:20") {
+  throw new Error(`回合制技能 CD 未正确生效: ${turnBasedSkillActionSequence}`);
+}
+
+const timelineRageTurnSequence = timelineRageSkillResult.events
+  .filter((event) => event.type === "turn_started" && event.actorId === "A-1")
+  .map((event) => `${event.elapsedTimeMs ?? "?"}:${event.payload?.actionType ?? "?"}:${event.payload?.currentRage ?? "?"}`)
+  .join("|");
+const timelineRageDamageSequence = timelineRageSkillResult.events
+  .filter((event) => event.type === "damage_applied" && event.actorId === "A-1")
+  .map((event) => `${event.payload?.actionType ?? "?"}:${event.payload?.damage ?? "?"}`)
+  .join("|");
+const timelineSkillTurnEvent = timelineRageSkillResult.events.find(
+  (event) => event.type === "turn_started" && event.actorId === "A-1" && event.payload?.actionType === "skill",
+);
+if (timelineRageTurnSequence !== "0:normal:80|1000:skill:100") {
+  throw new Error(`即时制怒气技能触发时机异常: ${timelineRageTurnSequence}`);
+}
+if (timelineRageDamageSequence !== "normal:10|skill:30") {
+  throw new Error(`技能倍率未正确限定在技能动作上: ${timelineRageDamageSequence}`);
+}
+if (!timelineSkillTurnEvent?.summary.includes("释放技能")) {
+  throw new Error("技能动作日志未明确标识为释放技能");
+}
+
+const skillNoAmmoTurnSequence = skillNoAmmoConsumeResult.events
+  .filter((event) => event.type === "turn_started" && event.actorId === "A-1")
+  .map((event) => `${event.elapsedTimeMs ?? "?"}:${event.payload?.actionType ?? "?"}:${event.payload?.currentAmmo ?? "?"}`)
+  .join("|");
+const skillNoAmmoReloadTimes = skillNoAmmoConsumeResult.events
+  .filter((event) => event.type === "reload_started" && event.actorId === "A-1")
+  .map((event) => event.elapsedTimeMs ?? null);
+if (skillNoAmmoTurnSequence !== "0:skill:1|1000:normal:1") {
+  throw new Error(`技能不耗弹或冷却推进异常: ${skillNoAmmoTurnSequence}`);
+}
+if (JSON.stringify(skillNoAmmoReloadTimes) !== JSON.stringify([1000])) {
+  throw new Error(`技能不耗弹后换弹时机异常: ${JSON.stringify(skillNoAmmoReloadTimes)}`);
+}
+
 console.log(
   JSON.stringify(
     {
@@ -629,6 +876,11 @@ console.log(
       fireRateTurnSequence,
       reloadTurnTimes,
       turnBasedTimelineSequence,
+      turnBasedSkillActionSequence,
+      timelineRageDamageSequence,
+      timelineRageTurnSequence,
+      skillNoAmmoTurnSequence,
+      skillNoAmmoReloadTimes,
       maxBattleTimeRounds: maxBattleTimeResult.roundsCompleted,
       maxBattleTimeEndReason: maxBattleTimeResult.events.at(-1)?.payload?.endReason ?? null,
       batchSummary: batchResult,

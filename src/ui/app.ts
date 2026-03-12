@@ -16,6 +16,7 @@ import {
   type BattleNumberFieldKey,
 } from "../domain/battleConfigMacros.ts";
 import {
+  type ActionType,
   actionResolutionModeLabels,
   actionResolutionModeOrder,
   type ActionResolutionMode,
@@ -311,7 +312,10 @@ const unitEditorAttributeSections: Array<{
   },
   {
     title: "特殊加成",
-    rows: [["skillTypeDamageBonus", "heroClassDamageBonus", "scenarioDamageBonus", "skillMultiplier"]],
+    rows: [
+      ["skillTypeDamageBonus", "heroClassDamageBonus", "scenarioDamageBonus", "skillMultiplier"],
+      ["skillCooldownRounds", "rageRecoverySpeed"],
+    ],
   },
   {
     title: "最终结算",
@@ -1700,7 +1704,7 @@ function normalizeSearchText(value: string) {
   return value.trim().toLocaleLowerCase();
 }
 
-function renderEventHighlight(text: string, tone: "critical" | "miss") {
+function renderEventHighlight(text: string, tone: "critical" | "miss" | "skill") {
   return `<span class="event-highlight event-highlight-${tone}">${escapeHtml(text)}</span>`;
 }
 
@@ -1782,24 +1786,42 @@ function isMinimumDamageEvent(event: BattleSimulationResult["events"][number]) {
   return event.payload?.isMinimumDamageByDefense === true;
 }
 
+function getEventActionType(event: BattleSimulationResult["events"][number]): ActionType | null {
+  return event.payload?.actionType === "skill" || event.payload?.actionType === "normal"
+    ? (event.payload.actionType as ActionType)
+    : null;
+}
+
+function isSkillActionEvent(event: BattleSimulationResult["events"][number]) {
+  return getEventActionType(event) === "skill" || event.payload?.isSkillAction === true;
+}
+
 function getEventSummaryText(event: BattleSimulationResult["events"][number]) {
   const actorName = event.actorId ? getUnitLabel(event.actorId) : null;
   const targetName = event.targetId ? getUnitLabel(event.targetId) : null;
 
   switch (event.type) {
     case "turn_started":
-      return actorName && targetName ? `${actorName} 对 ${targetName} 发起攻击` : event.summary;
+      if (actorName && targetName) {
+        return isSkillActionEvent(event) ? `${actorName} 对 ${targetName} 释放技能` : `${actorName} 对 ${targetName} 发起攻击`;
+      }
+      return event.summary;
     case "reload_started":
     case "reload_completed":
       return event.summary;
     case "attack_missed":
-      return actorName && targetName ? `${actorName} 攻击 ${targetName}，闪避/未命中` : event.summary;
+      if (actorName && targetName) {
+        return isSkillActionEvent(event)
+          ? `${actorName} 对 ${targetName} 释放技能，闪避/未命中`
+          : `${actorName} 攻击 ${targetName}，闪避/未命中`;
+      }
+      return event.summary;
     case "damage_applied": {
       const damage = typeof event.payload?.damage === "number" ? event.payload.damage : null;
       const targetHp = typeof event.payload?.targetHp === "number" ? event.payload.targetHp : null;
       if (actorName && targetName && damage !== null && targetHp !== null) {
         const damageTags = `${event.payload?.isHeadshot ? "爆头" : ""}${event.payload?.isCritical ? "暴击" : ""}`;
-        return `${actorName} 对 ${targetName} 造成 ${damage} 点${damageTags}伤害，目标剩余 ${formatHpText(targetHp, getEventTargetMaxHp(event))}${getMinimumDamageNote(event)}`;
+        return `${actorName} 对 ${targetName}${isSkillActionEvent(event) ? "释放技能，" : ""}造成 ${damage} 点${damageTags}伤害，目标剩余 ${formatHpText(targetHp, getEventTargetMaxHp(event))}${getMinimumDamageNote(event)}`;
       }
       return event.summary;
     }
@@ -1831,7 +1853,9 @@ function renderEventSummaryHtml(event: BattleSimulationResult["events"][number])
   switch (event.type) {
     case "turn_started":
       if (actorName && targetName) {
-        return `${escapeHtml(actorName)} 对 ${escapeHtml(targetName)} 发起攻击`;
+        return isSkillActionEvent(event)
+          ? `${escapeHtml(actorName)} 对 ${escapeHtml(targetName)} ${renderEventHighlight("释放技能", "skill")}`
+          : `${escapeHtml(actorName)} 对 ${escapeHtml(targetName)} 发起攻击`;
       }
       break;
     case "reload_started":
@@ -1839,7 +1863,9 @@ function renderEventSummaryHtml(event: BattleSimulationResult["events"][number])
       return escapeHtml(event.summary);
     case "attack_missed":
       if (actorName && targetName) {
-        return `${escapeHtml(actorName)} 攻击 ${escapeHtml(targetName)}，${renderEventHighlight("闪避/未命中", "miss")}`;
+        return isSkillActionEvent(event)
+          ? `${escapeHtml(actorName)} 对 ${escapeHtml(targetName)} ${renderEventHighlight("释放技能", "skill")}，${renderEventHighlight("闪避/未命中", "miss")}`
+          : `${escapeHtml(actorName)} 攻击 ${escapeHtml(targetName)}，${renderEventHighlight("闪避/未命中", "miss")}`;
       }
       break;
     case "damage_applied": {
@@ -1848,7 +1874,8 @@ function renderEventSummaryHtml(event: BattleSimulationResult["events"][number])
       if (actorName && targetName && damage !== null && targetHp !== null) {
         const headshotText = event.payload?.isHeadshot ? "爆头" : "";
         const criticalText = event.payload?.isCritical ? renderEventHighlight("暴击", "critical") : "";
-        return `${escapeHtml(actorName)} 对 ${escapeHtml(targetName)} 造成 ${escapeHtml(String(damage))} 点${escapeHtml(headshotText)}${criticalText}伤害，目标剩余 ${escapeHtml(formatHpText(targetHp, getEventTargetMaxHp(event)))}${escapeHtml(getMinimumDamageNote(event))}`;
+        const skillText = isSkillActionEvent(event) ? `${renderEventHighlight("释放技能", "skill")}，` : "";
+        return `${escapeHtml(actorName)} 对 ${escapeHtml(targetName)} ${skillText}造成 ${escapeHtml(String(damage))} 点${escapeHtml(headshotText)}${criticalText}伤害，目标剩余 ${escapeHtml(formatHpText(targetHp, getEventTargetMaxHp(event)))}${escapeHtml(getMinimumDamageNote(event))}`;
       }
       break;
     }
@@ -1968,6 +1995,9 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
             actionResolutionModeLabels[payload.actionResolutionMode as ActionResolutionMode] ?? payload.actionResolutionMode,
         });
       }
+      if (typeof payload.initialRage === "number") {
+        rows.push({ label: battleConfigNumberMacroMap.initialRage.label, value: `${payload.initialRage}` });
+      }
       if (typeof payload.maxRounds === "number") {
         rows.push({ label: battleConfigNumberMacroMap.maxRounds.label, value: formatBattleConfigValue("maxRounds", payload.maxRounds) });
       }
@@ -2013,6 +2043,9 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       }
       break;
     case "turn_started":
+      if (typeof payload.actionType === "string") {
+        rows.push({ label: "动作类型", value: payload.actionType === "skill" ? "释放技能" : "普通攻击" });
+      }
       if (typeof payload.fireRate === "number") {
         rows.push({ label: unitAttributeMacroMap.fireRate.label, value: `${payload.fireRate}` });
       }
@@ -2021,6 +2054,15 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       }
       if (typeof payload.magazineCapacity === "number") {
         rows.push({ label: "弹匣容量", value: `${payload.magazineCapacity}` });
+      }
+      if (getResultActionResolutionMode() === "arpgSimultaneous" && typeof payload.currentRage === "number") {
+        rows.push({ label: "当前怒气", value: `${payload.currentRage}` });
+      }
+      if (getResultActionResolutionMode() === "turnBasedSpeed" && typeof payload.skillCooldownRounds === "number") {
+        rows.push({ label: unitAttributeMacroMap.skillCooldownRounds.label, value: `${payload.skillCooldownRounds}` });
+      }
+      if (getResultActionResolutionMode() === "turnBasedSpeed" && typeof payload.nextSkillReadyRound === "number") {
+        rows.push({ label: "下次可释放技能回合", value: `${payload.nextSkillReadyRound}` });
       }
       break;
     case "reload_started":
@@ -2058,11 +2100,17 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       }
       break;
     case "attack_missed":
+      if (typeof payload.actionType === "string") {
+        rows.push({ label: "动作类型", value: payload.actionType === "skill" ? "释放技能" : "普通攻击" });
+      }
       if (typeof payload.hitChance === "number") {
         rows.push({ label: "实际命中率%", value: `${payload.hitChance}%` });
       }
       break;
     case "damage_applied":
+      if (typeof payload.actionType === "string") {
+        rows.push({ label: "动作类型", value: payload.actionType === "skill" ? "释放技能" : "普通攻击" });
+      }
       if (typeof payload.baseDamage === "number") {
         rows.push({ label: "基础伤害", value: `${payload.baseDamage}` });
       }
@@ -2111,7 +2159,7 @@ function getEventPayloadRows(event: BattleSimulationResult["events"][number]) {
       if (typeof payload.elementMultiplier === "number") {
         rows.push({ label: "元素倍率%", value: `${payload.elementMultiplier}%` });
       }
-      if (typeof payload.skillMultiplier === "number") {
+      if (typeof payload.skillMultiplier === "number" && (payload.isSkillAction === true || payload.skillMultiplier !== 100)) {
         rows.push({ label: "技能倍率%", value: `${payload.skillMultiplier}%` });
       }
       if (typeof payload.scenarioMultiplier === "number") {
@@ -2488,13 +2536,18 @@ function renderUnitEditorPage() {
 
 function renderSingleSummary() {
   if (!state.result) {
-    return `<p class="empty">运行一次模拟后，这里会展示胜负、回合数、幸存单位与完整事件流。</p>`;
+    return `<p class="empty">运行一次模拟后，这里会展示胜负、完成时间/回合、幸存单位与完整事件流。</p>`;
   }
 
   const winner =
     state.result.winnerTeamId === null
       ? "平局"
       : `${state.draft.battle.teamNames[state.result.winnerTeamId]}胜利！`;
+  const usesRoundMetrics = state.draft.battle.actionResolutionMode === "turnBasedSpeed";
+  const completionLabel = usesRoundMetrics ? "完成回合" : "完成时间";
+  const completionValue = usesRoundMetrics
+    ? `${state.result.roundsCompleted}`
+    : formatTimelineMs(state.result.events.at(-1)?.elapsedTimeMs ?? 0);
   const survivors = state.result.finalUnits.filter((unit) => unit.isAlive);
   const survivorText =
     survivors.length === 0
@@ -2518,8 +2571,8 @@ function renderSingleSummary() {
         <strong>${escapeHtml(winner)}</strong>
       </div>
       <div class="summary-item summary-item-blue">
-        <span>完成回合</span>
-        <strong>${state.result.roundsCompleted}</strong>
+        <span>${completionLabel}</span>
+        <strong>${completionValue}</strong>
       </div>
       <div class="summary-item summary-item-highlight">
         <span>幸存单位</span>
@@ -3243,6 +3296,7 @@ function renderLogTable() {
       const rowClassNames = [
         event.sequence - 1 === state.replayEventIndex ? "is-active" : "",
         isMinimumDamageEvent(event) ? "is-minimum-damage" : "",
+        isSkillActionEvent(event) ? "is-skill-action" : "",
       ]
         .filter(Boolean)
         .join(" ");
@@ -3352,7 +3406,7 @@ function renderMainPage() {
         <div class="hero-kicker">内部工具 · 战斗规则验证</div>
         <h1>基础战斗模拟器</h1>
         <p>
-          当前版本已经支持统一时间轴下的两种行动结算模式、射速、弹匣、换弹、元素关系与多乘区伤害结算。
+          当前版本已经支持统一时间轴下的两种行动结算模式、射速、弹匣、换弹、技能释放、元素关系与多乘区伤害结算。
           现在还额外支持单变量敏感性分析，可以直接对某个单位属性做增幅扫描，观察胜率、终局净优势和完成时间的变化。
         </p>
         ${renderHeroMeta([

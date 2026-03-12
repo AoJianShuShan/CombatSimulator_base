@@ -192,10 +192,26 @@
     {
       "key": "skillMultiplier",
       "label": "技能倍率%",
-      "default": 100,
+      "default": 200,
       "min": 0,
       "step": 1,
       "role": "skillMultiplier"
+    },
+    {
+      "key": "skillCooldownRounds",
+      "label": "回合CD",
+      "default": 0,
+      "min": 0,
+      "step": 1,
+      "role": "skillCooldownRounds"
+    },
+    {
+      "key": "rageRecoverySpeed",
+      "label": "怒气恢复速度（点/s）",
+      "default": 20,
+      "min": 0,
+      "step": 1,
+      "role": "rageRecoverySpeed"
     },
     {
       "key": "outputAmplify",

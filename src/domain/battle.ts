@@ -4,6 +4,7 @@ import { createBattleNumberDefaults, createCurrentTimeUint32 } from "./battleCon
 export type TeamId = "A" | "B";
 export type TargetingStrategy = "front" | "lowestHp" | "highestAttack";
 export type ActionResolutionMode = "arpgSimultaneous" | "turnBasedSpeed";
+export type ActionType = "normal" | "skill";
 export type UnitPosition = "front" | "middle" | "back";
 export type AttackElement = "none" | "physical" | "fire" | "electromagnetic" | "corrosive";
 export type ProtectionType = "none" | "heatArmor" | "insulatedArmor" | "bioArmor" | "heavyArmor";
@@ -64,6 +65,8 @@ export interface UnitStats {
   finalDamageBonus: number;
   finalDamageReduction: number;
   skillMultiplier: number;
+  skillCooldownRounds: number;
+  rageRecoverySpeed: number;
   outputAmplify: number;
   outputDecay: number;
   damageTakenAmplify: number;
@@ -86,6 +89,7 @@ export interface BattleConfig {
   maxBattleTimeMs: number;
   minimumDamage: number;
   randomSeed: number;
+  initialRage: number;
   targetingStrategy: TargetingStrategy;
   actionResolutionMode: ActionResolutionMode;
   armorFormulaBase: number;
@@ -112,6 +116,8 @@ export interface BattleUnitState extends UnitConfig {
   currentAmmo?: number;
   nextAttackTimeMs?: number;
   reloadUntilMs?: number | null;
+  currentRage?: number;
+  nextSkillReadyRound?: number;
 }
 
 export type BattleEventType =

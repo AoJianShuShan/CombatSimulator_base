@@ -3,7 +3,7 @@
 一个零依赖的战斗模拟器骨架，当前提供：
 
 - 前端 Web TypeScript：配置阵容、编辑单位、运行模拟、查看结果与事件日志
-- 前端执行视图切换：单场模拟 / 多场统计
+- 前端执行视图切换：单场模拟 / 多场统计 / 敏感性分析
 - 前端可用交互：刷新随机种子、逐事件回放、导入/导出配置、导出结果 JSON、主题切换
 - 前端本地模拟引擎：纯函数执行战斗，不依赖 UI
 - Python 后端：标准库 HTTP API，可在 WSL、Linux 或 Windows 启动
@@ -16,6 +16,7 @@
 - [当前战斗规则说明](./docs/combat-rules.md)
 - [战斗伤害公式说明](./docs/damage-formula.md)
 - [N 场战斗摘要设计与落地记录](./docs/n-battle-summary-plan.md)
+- [单变量敏感性分析设计与落地记录](./docs/sensitivity-analysis-design.md)
 - [时间事件驱动改造设计与落地记录](./docs/timeline-combat-design.md)
 
 ## 当前能力
@@ -27,6 +28,7 @@
 - 支持导入配置 JSON、导出配置 JSON、导出模拟结果 JSON
 - 支持前端本地运行，或切换为调用后端 API
 - 支持在同一份配置上运行 N 场统计，输出胜率、终局净优势、剩余血量与完成节奏摘要
+- 支持单变量敏感性分析，按增幅范围扫描单位属性并输出趋势图与明细表
 - 固定 `randomSeed` 后重复运行，得到可复现的事件流
 - 结果页支持逐事件回放、日志模糊筛选、关键伤害高亮，并显示换弹事件
 - 整场战斗已支持 `最大战斗时长(ms)`，可与 `最大回合数` 一起作为终止条件；若因上限结束且双方仍存活，则按平局处理
@@ -109,7 +111,10 @@ $env:PORT = "8000"
 - `前排优先` 会按敌方前排 -> 中排 -> 后排选择目标，同排内再按初始编队顺序
 - `速度` 只决定 `回合制速度高者先手` 模式下同一时间点的先后手，不决定行动频率
 - `射速` 决定两次攻击之间的冷却时间：`60000 / 射速`
-- 每次攻击消耗 `1` 发弹药；弹匣打空后开始换弹；只有射击冷却和换弹都完成后才能再次开火
+- 每次普通攻击消耗 `1` 发弹药；技能动作不消耗弹药，但同样会占用这次出手机会，并继续走射击冷却节奏
+- `回合制速度高者先手` 模式下，单位起手默认可释放技能；之后要等到 `回合CD` 结束，才会再次把本次行动替换成技能
+- `Arpg即时制（时间）` 模式下，单位按 `怒气恢复速度` 持续累计怒气；整场战斗参数里的 `初始怒气值` 只在这个模式生效；怒气满 `100` 时，这次行动改为释放技能
+- `技能倍率` 默认 `200%`，且只在释放技能时生效；普通攻击这层固定按 `1` 倍处理
 - 战斗会在 `最大回合数` 或 `最大战斗时长(ms)` 任一条件先达到时结束；若因上限结束且双方都还存活，则按平局处理
 - 有效生命 / 攻击 / 防御：`固定值 * (1 + 百分比 / 100)`，结果按四舍五入取整
 - 每场战斗都带 `randomSeed`，前后端用同一种子驱动伪随机，保证可复现重播
@@ -124,11 +129,14 @@ $env:PORT = "8000"
 - `GET /health`
 - `POST /simulate`
 - `POST /simulate-batch`
+- `POST /simulate-sensitivity`
 
 `POST /simulate` 请求体对齐 [`src/domain/battle.ts`](./src/domain/battle.ts) 中的 `BattleInput`，响应体对齐 `BattleSimulationResult`。
-其中 `BattleInput.battle.randomSeed` 用于伪随机重播，`BattleSimulationResult.events[*].timeIndex` 表示稳定递增的事件索引，`BattleSimulationResult.events[*].elapsedTimeMs` 表示该事件对应的真实战斗时间。
+其中 `BattleInput.battle.randomSeed` 用于伪随机重播，`BattleSimulationResult.events[*].timeIndex` 表示稳定递增的事件索引，`BattleSimulationResult.events[*].elapsedTimeMs` 表示该事件对应的真实战斗时间。攻击相关事件的 `payload.actionType` 会明确标记这是 `normal` 还是 `skill`。
 
 `POST /simulate-batch` 请求体格式为 `{ input: BattleInput, count: number }`，其中 `count` 必须是 `1..5000` 的整数；返回 N 场战斗的最终摘要统计，不返回完整事件流。
+
+`POST /simulate-sensitivity` 请求体对齐前端敏感性分析配置，返回单变量扫描后的完整 `BattleSensitivityResult`；每个取值点除了摘要统计外，还会带 `value`（增幅值）和 `actualValue`（真正参与模拟的结果值）。
 
 ## 目录
 

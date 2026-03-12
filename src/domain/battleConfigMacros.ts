@@ -3,6 +3,7 @@ export type BattleNumberFieldKey =
   | "maxBattleTimeMs"
   | "minimumDamage"
   | "randomSeed"
+  | "initialRage"
   | "armorFormulaBase"
   | "maxArmorDamageReduction"
   | "elementAdvantageDamageRate"

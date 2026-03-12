@@ -1,4 +1,5 @@
 import type {
+  ActionType,
   ActionResolutionMode,
   AttackElement,
   BattleEvent,
@@ -15,8 +16,11 @@ import type { TargetingStrategy, UnitStats } from "../domain/battle.ts";
 
 interface RuntimeUnit extends BattleUnitState {
   currentAmmo: number;
+  currentRage: number;
   initialOrder: number;
+  lastRageUpdateMs: number;
   nextAttackTimeMs: number;
+  nextSkillReadyRound: number;
   reloadUntilMs: number | null;
 }
 
@@ -26,8 +30,10 @@ interface SeededRandom {
 }
 
 interface AttackResolutionBase {
+  actionType: ActionType;
   actorId: string;
   actorName: string;
+  isSkillAction: boolean;
   targetId: string;
   targetMaxHp: number;
   targetName: string;
@@ -117,6 +123,10 @@ function normalizeTimelineValue(value: number) {
   return roundToFourDecimals(value);
 }
 
+function clampRage(value: number) {
+  return Math.min(100, Math.max(0, roundToFourDecimals(value)));
+}
+
 function clampPercentage(value: number) {
   return Math.min(100, Math.max(0, value));
 }
@@ -155,6 +165,14 @@ function getReloadTimeMs(stats: UnitStats) {
 
 function getFireIntervalMs(stats: UnitStats) {
   return normalizeTimelineValue(FIRE_INTERVAL_BASE_MS / Math.max(1, stats[unitStatRoleKeys.fireRate]));
+}
+
+function getSkillCooldownRounds(stats: UnitStats) {
+  return Math.max(0, Math.trunc(stats[unitStatRoleKeys.skillCooldownRounds]));
+}
+
+function getRageRecoverySpeed(stats: UnitStats) {
+  return Math.max(0, stats[unitStatRoleKeys.rageRecoverySpeed]);
 }
 
 function getArmorReductionRate(input: BattleInput, actor: RuntimeUnit, target: RuntimeUnit) {
@@ -222,15 +240,19 @@ function createSeededRandom(seed: number): SeededRandom {
   };
 }
 
-function cloneUnit(unit: UnitConfig, initialOrder: number): RuntimeUnit {
+function cloneUnit(unit: UnitConfig, initialOrder: number, input: BattleInput): RuntimeUnit {
+  const usesTimelineRage = input.battle.actionResolutionMode === "arpgSimultaneous";
   return {
     ...unit,
     currentHp: getEffectiveMaxHp(unit.stats),
     isAlive: true,
     currentAmmo: getMagazineCapacity(unit.stats),
+    currentRage: usesTimelineRage ? clampRage(input.battle.initialRage) : 0,
     nextAttackTimeMs: 0,
+    nextSkillReadyRound: 1,
     reloadUntilMs: null,
     initialOrder,
+    lastRageUpdateMs: 0,
   };
 }
 
@@ -328,21 +350,52 @@ function createEvent(events: BattleEvent[], event: Omit<BattleEvent, "sequence" 
   });
 }
 
+function syncRageAtTime(units: RuntimeUnit[], timelineMs: number, actionResolutionMode: ActionResolutionMode) {
+  if (actionResolutionMode !== "arpgSimultaneous") {
+    return;
+  }
+
+  for (const unit of units) {
+    if (!unit.isAlive) {
+      continue;
+    }
+
+    const deltaMs = Math.max(0, timelineMs - unit.lastRageUpdateMs);
+    if (deltaMs > 0) {
+      unit.currentRage = clampRage(unit.currentRage + (deltaMs * getRageRecoverySpeed(unit.stats)) / 1000);
+    }
+
+    unit.lastRageUpdateMs = timelineMs;
+  }
+}
+
+function getActionType(actionResolutionMode: ActionResolutionMode, actor: RuntimeUnit, round: number): ActionType {
+  if (actionResolutionMode === "turnBasedSpeed") {
+    return round >= actor.nextSkillReadyRound ? "skill" : "normal";
+  }
+
+  return actor.currentRage >= 100 - EPSILON ? "skill" : "normal";
+}
+
 function resolveAttack(
   input: BattleInput,
   random: SeededRandom,
   actor: RuntimeUnit,
   target: RuntimeUnit,
+  actionType: ActionType,
 ): AttackResolution {
+  const isSkillAction = actionType === "skill";
   const effectiveHitChance = clampPercentage(
     actor.stats[unitStatRoleKeys.hitChance] - target.stats[unitStatRoleKeys.dodgeChance],
   );
   const hitRoll = random.next();
   if (hitRoll >= effectiveHitChance / 100) {
     return {
+      actionType,
       actorId: actor.id,
       actorName: actor.name,
       effectiveHitChance,
+      isSkillAction,
       targetId: target.id,
       targetMaxHp: getEffectiveMaxHp(target.stats),
       targetName: target.name,
@@ -366,7 +419,7 @@ function resolveAttack(
   const scenarioMultiplier = 1 + actor.stats[unitStatRoleKeys.scenarioDamageBonus] / 100;
   const heroClassMultiplier = 1 + actor.stats[unitStatRoleKeys.heroClassDamageBonus] / 100;
   const skillTypeMultiplier = 1 + actor.stats[unitStatRoleKeys.skillTypeDamageBonus] / 100;
-  const skillMultiplier = actor.stats[unitStatRoleKeys.skillMultiplier] / 100;
+  const skillMultiplier = isSkillAction ? actor.stats[unitStatRoleKeys.skillMultiplier] / 100 : 1;
   const outputMultiplier = clampMultiplier(
     1 + (actor.stats[unitStatRoleKeys.outputAmplify] - actor.stats[unitStatRoleKeys.outputDecay]) / 100,
   );
@@ -392,6 +445,7 @@ function resolveAttack(
   const damage = Math.max(input.battle.minimumDamage, roundHalfUp(damageBeforeRound));
 
   return {
+    actionType,
     actorId: actor.id,
     actorName: actor.name,
     armorMultiplier,
@@ -411,6 +465,7 @@ function resolveAttack(
     heroClassMultiplier,
     isCritical,
     isHeadshot,
+    isSkillAction,
     isMinimumDamageByDefense,
     outputMultiplier,
     scenarioMultiplier,
@@ -429,18 +484,25 @@ function createTurnStartedEvent(
   timelineMs: number,
   actor: RuntimeUnit,
   target: RuntimeUnit,
+  actionType: ActionType,
 ) {
+  const isSkillAction = actionType === "skill";
   createEvent(events, {
     type: "turn_started",
     round,
     actorId: actor.id,
     targetId: target.id,
-    summary: `${actor.name} 对 ${target.name} 发起攻击`,
+    summary: isSkillAction ? `${actor.name} 对 ${target.name} 释放技能` : `${actor.name} 对 ${target.name} 发起攻击`,
     payload: {
+      actionType,
       timelineMs,
       fireRate: roundToTwoDecimals(Math.max(1, actor.stats[unitStatRoleKeys.fireRate])),
       currentAmmo: actor.currentAmmo,
+      currentRage: roundToTwoDecimals(actor.currentRage),
+      isSkillAction,
       magazineCapacity: getMagazineCapacity(actor.stats),
+      nextSkillReadyRound: actor.nextSkillReadyRound,
+      skillCooldownRounds: getSkillCooldownRounds(actor.stats),
     },
   });
 }
@@ -456,10 +518,15 @@ function createAttackMissEvent(
     round,
     actorId: resolution.actorId,
     targetId: resolution.targetId,
-    summary: `${resolution.actorName} 攻击 ${resolution.targetName}，但被闪避或未命中`,
+    summary:
+      resolution.actionType === "skill"
+        ? `${resolution.actorName} 对 ${resolution.targetName} 释放技能，但被闪避或未命中`
+        : `${resolution.actorName} 攻击 ${resolution.targetName}，但被闪避或未命中`,
     payload: {
+      actionType: resolution.actionType,
       timelineMs,
       hitChance: resolution.effectiveHitChance,
+      isSkillAction: resolution.isSkillAction,
     },
   });
 }
@@ -478,8 +545,12 @@ function createDamageAppliedEvent(
     round,
     actorId: resolution.actorId,
     targetId: resolution.targetId,
-    summary: `${resolution.actorName} 对 ${resolution.targetName} 造成 ${resolution.damage} 点${damageTags}伤害，目标剩余 ${targetCurrentHp}/${resolution.targetMaxHp} HP${resolution.isMinimumDamageByDefense ? "（不破防）" : ""}`,
+    summary:
+      `${resolution.actorName} ${resolution.actionType === "skill" ? "释放技能攻击" : "攻击"} ${resolution.targetName}，` +
+      `造成 ${resolution.damage} 点${damageTags}伤害，目标剩余 ${targetCurrentHp}/${resolution.targetMaxHp} HP` +
+      `${resolution.isMinimumDamageByDefense ? "（不破防）" : ""}`,
     payload: {
+      actionType: resolution.actionType,
       timelineMs,
       damage: resolution.damage,
       baseDamage: resolution.baseDamage,
@@ -503,6 +574,7 @@ function createDamageAppliedEvent(
       damageTakenMultiplier: roundToTwoDecimals(resolution.damageTakenMultiplier * 100),
       finalDamageMultiplier: roundToTwoDecimals(resolution.finalDamageMultiplier * 100),
       isMinimumDamageByDefense: resolution.isMinimumDamageByDefense,
+      isSkillAction: resolution.isSkillAction,
       effectiveAttack: resolution.effectiveAttack,
       effectiveDefense: resolution.effectiveDefense,
     },
@@ -615,13 +687,27 @@ function getReadyAttackUnitsAtTime(units: RuntimeUnit[], timelineMs: number) {
 
 function consumeAmmoAndSchedule(
   actor: RuntimeUnit,
+  actionResolutionMode: ActionResolutionMode,
   timelineMs: number,
   events: BattleEvent[],
   round: number,
   emitReloadStartedEvent: boolean,
+  actionType: ActionType,
 ) {
-  actor.currentAmmo = Math.max(0, actor.currentAmmo - 1);
   actor.nextAttackTimeMs = normalizeTimelineValue(timelineMs + getFireIntervalMs(actor.stats));
+
+  if (actionType === "skill") {
+    if (actionResolutionMode === "turnBasedSpeed") {
+      actor.nextSkillReadyRound = round + getSkillCooldownRounds(actor.stats) + 1;
+    } else {
+      actor.currentRage = 0;
+      actor.lastRageUpdateMs = timelineMs;
+    }
+    actor.reloadUntilMs = null;
+    return;
+  }
+
+  actor.currentAmmo = Math.max(0, actor.currentAmmo - 1);
 
   if (actor.currentAmmo > 0) {
     actor.reloadUntilMs = null;
@@ -655,12 +741,13 @@ function runTurnBasedTimelineWindow({
       break;
     }
 
-    createTurnStartedEvent(events, round, timelineMs, actor, target);
-    const resolution = resolveAttack(input, random, actor, target);
+    const actionType = getActionType(input.battle.actionResolutionMode, actor, round);
+    createTurnStartedEvent(events, round, timelineMs, actor, target, actionType);
+    const resolution = resolveAttack(input, random, actor, target, actionType);
 
     if (resolution.type === "miss") {
       createAttackMissEvent(events, round, timelineMs, resolution);
-      consumeAmmoAndSchedule(actor, timelineMs, events, round, true);
+      consumeAmmoAndSchedule(actor, input.battle.actionResolutionMode, timelineMs, events, round, true, actionType);
       continue;
     }
 
@@ -672,7 +759,7 @@ function runTurnBasedTimelineWindow({
       createUnitDefeatedEvent(events, round, timelineMs, target, resolution.actorId);
     }
 
-    consumeAmmoAndSchedule(actor, timelineMs, events, round, true);
+    consumeAmmoAndSchedule(actor, input.battle.actionResolutionMode, timelineMs, events, round, true, actionType);
 
     const remainingEnemies = getAliveUnitsByTeam(units, getOpponentTeamId(actor.teamId));
     if (remainingEnemies.length === 0) {
@@ -699,8 +786,9 @@ function runSimultaneousTimelineWindow({
       continue;
     }
 
-    createTurnStartedEvent(events, round, timelineMs, actor, target);
-    resolutions.push(resolveAttack(input, random, actor, target));
+    const actionType = getActionType(input.battle.actionResolutionMode, actor, round);
+    createTurnStartedEvent(events, round, timelineMs, actor, target, actionType);
+    resolutions.push(resolveAttack(input, random, actor, target, actionType));
   }
 
   const defeatedIds = new Set<string>();
@@ -742,7 +830,16 @@ function runSimultaneousTimelineWindow({
       continue;
     }
 
-    consumeAmmoAndSchedule(actualActor, timelineMs, events, round, actualActor.isAlive);
+    const actionType = getActionType(input.battle.actionResolutionMode, actor, round);
+    consumeAmmoAndSchedule(
+      actualActor,
+      input.battle.actionResolutionMode,
+      timelineMs,
+      events,
+      round,
+      actualActor.isAlive,
+      actionType,
+    );
   }
 }
 
@@ -752,7 +849,7 @@ const timelineDrivers: Record<ActionResolutionMode, TimelineDriver> = {
 };
 
 export function simulateBattle(input: BattleInput): BattleSimulationResult {
-  const units = input.units.map((unit, index) => cloneUnit(unit, index));
+  const units = input.units.map((unit, index) => cloneUnit(unit, index, input));
   const events: BattleEvent[] = [];
   let roundsCompleted = 0;
   let lastTimelineMs = 0;
@@ -765,6 +862,7 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
     summary: `${input.battle.teamNames.A} 与 ${input.battle.teamNames.B} 的战斗开始`,
     payload: {
       actionResolutionMode: input.battle.actionResolutionMode,
+      initialRage: input.battle.initialRage,
       maxBattleTimeMs: input.battle.maxBattleTimeMs,
       maxRounds: input.battle.maxRounds,
       timelineMs: 0,
@@ -793,6 +891,7 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
 
     roundsCompleted += 1;
     lastTimelineMs = timelineMs;
+    syncRageAtTime(units, timelineMs, input.battle.actionResolutionMode);
 
     createEvent(events, {
       type: "round_started",
@@ -851,6 +950,6 @@ export function simulateBattle(input: BattleInput): BattleSimulationResult {
     winnerTeamId,
     roundsCompleted,
     events,
-    finalUnits: units.map(({ initialOrder, ...unit }) => unit),
+    finalUnits: units.map(({ initialOrder, lastRageUpdateMs, ...unit }) => unit),
   };
 }

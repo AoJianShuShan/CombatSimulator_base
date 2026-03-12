@@ -1085,6 +1085,10 @@ select:focus-visible {
   color: var(--blue);
 }
 
+.event-highlight-skill {
+  color: #9a5f00;
+}
+
 .replay-unit {
   padding: 14px;
 }
@@ -1493,6 +1497,19 @@ select:focus-visible {
   color: #9e2525;
 }
 
+.log-table tbody tr.is-skill-action {
+  background: rgba(154, 95, 0, 0.06);
+}
+
+.log-table tbody tr.is-skill-action td {
+  color: #7b4a00;
+}
+
+.log-table tbody tr.is-skill-action .badge {
+  background: rgba(154, 95, 0, 0.12);
+  color: #7b4a00;
+}
+
 .log-table th:first-child,
 .log-table td:first-child {
   width: 64px;
@@ -1847,6 +1864,23 @@ select:focus-visible {
 
 :root[data-theme="dark"] .log-table tbody tr.is-minimum-damage .badge {
   background: rgba(238, 143, 143, 0.12);
+}
+
+:root[data-theme="dark"] .event-highlight-skill {
+  color: #ffc85d;
+}
+
+:root[data-theme="dark"] .log-table tbody tr.is-skill-action {
+  background: rgba(255, 200, 93, 0.08);
+}
+
+:root[data-theme="dark"] .log-table tbody tr.is-skill-action td,
+:root[data-theme="dark"] .log-table tbody tr.is-skill-action .badge {
+  color: #ffd98e;
+}
+
+:root[data-theme="dark"] .log-table tbody tr.is-skill-action .badge {
+  background: rgba(255, 200, 93, 0.14);
 }
 
 :root[data-theme="dark"] .badge-neutral {

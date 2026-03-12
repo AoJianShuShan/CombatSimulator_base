@@ -8,6 +8,7 @@ from typing import Any, Callable, cast
 from backend.attribute_macros import get_unit_attribute_macros
 from backend.attribute_macros import get_unit_stat_role_keys
 from backend.models import (
+    ActionType,
     ActionResolutionMode,
     AttackElement,
     BattleBatchSummaryResult,
@@ -77,6 +78,10 @@ def _round_to_four_decimals(value: float) -> float:
 
 def _normalize_timeline_value(value: float) -> float:
     return _round_to_four_decimals(value)
+
+
+def _clamp_rage(value: float) -> float:
+    return min(100.0, max(0.0, _round_to_four_decimals(value)))
 
 
 def _clamp_percentage(value: float) -> float:
@@ -159,6 +164,14 @@ def _get_fire_interval_ms(stats: dict[str, Any]) -> float:
     return _normalize_timeline_value(FIRE_INTERVAL_BASE_MS / fire_rate)
 
 
+def _get_skill_cooldown_rounds(stats: dict[str, Any]) -> int:
+    return max(0, int(float(stats[UNIT_STAT_ROLE_KEYS["skillCooldownRounds"]])))
+
+
+def _get_rage_recovery_speed(stats: dict[str, Any]) -> float:
+    return max(0.0, float(stats[UNIT_STAT_ROLE_KEYS["rageRecoverySpeed"]]))
+
+
 def _get_armor_reduction_rate(battle: dict[str, Any], actor: RuntimeUnit, target: RuntimeUnit) -> float:
     armor_gap = max(
         0.0,
@@ -193,14 +206,18 @@ def _get_element_relation(battle: dict[str, Any], actor: RuntimeUnit, target: Ru
     return "neutral", 1.0
 
 
-def _clone_unit(unit: UnitConfig, initial_order: int) -> RuntimeUnit:
+def _clone_unit(unit: UnitConfig, initial_order: int, battle_input: BattleInput) -> RuntimeUnit:
+    uses_timeline_rage = battle_input["battle"]["actionResolutionMode"] == "arpgSimultaneous"
     runtime_unit: RuntimeUnit = {
         **deepcopy(unit),
         "currentAmmo": _get_magazine_capacity(unit["stats"]),
         "currentHp": _get_effective_max_hp(unit),
+        "currentRage": _clamp_rage(float(battle_input["battle"]["initialRage"])) if uses_timeline_rage else 0.0,
         "initialOrder": initial_order,
         "isAlive": True,
+        "lastRageUpdateMs": 0.0,
         "nextAttackTimeMs": 0.0,
+        "nextSkillReadyRound": 1,
         "reloadUntilMs": None,
     }
     return runtime_unit
@@ -348,13 +365,39 @@ def _create_event(events: list[dict[str, Any]], event: dict[str, Any]) -> None:
     events.append(normalized_event)
 
 
+def _sync_rage_at_time(units: list[RuntimeUnit], timeline_ms: float, action_resolution_mode: ActionResolutionMode) -> None:
+    if action_resolution_mode != "arpgSimultaneous":
+        return
+
+    for unit in units:
+        if not unit["isAlive"]:
+            continue
+
+        delta_ms = max(0.0, timeline_ms - float(unit["lastRageUpdateMs"]))
+        if delta_ms > 0:
+            unit["currentRage"] = _clamp_rage(
+                float(unit["currentRage"]) + delta_ms * _get_rage_recovery_speed(unit["stats"]) / 1000,
+            )
+
+        unit["lastRageUpdateMs"] = timeline_ms
+
+
+def _get_action_type(action_resolution_mode: ActionResolutionMode, actor: RuntimeUnit, round_index: int) -> ActionType:
+    if action_resolution_mode == "turnBasedSpeed":
+        return "skill" if round_index >= int(actor["nextSkillReadyRound"]) else "normal"
+
+    return "skill" if float(actor["currentRage"]) >= 100 - TIME_EPSILON else "normal"
+
+
 def _resolve_attack(
     battle_input: BattleInput,
     random: SeededRandom,
     actor: RuntimeUnit,
     target: RuntimeUnit,
+    action_type: ActionType,
 ) -> AttackResolution:
     battle = battle_input["battle"]
+    is_skill_action = action_type == "skill"
     effective_hit_chance = _clamp_percentage(
         float(actor["stats"][UNIT_STAT_ROLE_KEYS["hitChance"]])
         - float(target["stats"][UNIT_STAT_ROLE_KEYS["dodgeChance"]]),
@@ -362,9 +405,11 @@ def _resolve_attack(
     hit_roll = random.next()
     if hit_roll >= effective_hit_chance / 100:
         return {
+            "actionType": action_type,
             "type": "miss",
             "actorId": actor["id"],
             "actorName": actor["name"],
+            "isSkillAction": is_skill_action,
             "targetId": target["id"],
             "targetName": target["name"],
             "targetMaxHp": _get_effective_max_hp(target),
@@ -390,7 +435,7 @@ def _resolve_attack(
     scenario_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["scenarioDamageBonus"]]) / 100
     hero_class_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["heroClassDamageBonus"]]) / 100
     skill_type_multiplier = 1 + float(actor["stats"][UNIT_STAT_ROLE_KEYS["skillTypeDamageBonus"]]) / 100
-    skill_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["skillMultiplier"]]) / 100
+    skill_multiplier = float(actor["stats"][UNIT_STAT_ROLE_KEYS["skillMultiplier"]]) / 100 if is_skill_action else 1.0
     output_multiplier = _clamp_multiplier(
         1 + (
             float(actor["stats"][UNIT_STAT_ROLE_KEYS["outputAmplify"]])
@@ -426,6 +471,7 @@ def _resolve_attack(
     damage = max(int(battle["minimumDamage"]), _round_half_up(damage_before_round))
 
     return {
+        "actionType": action_type,
         "type": "damage",
         "actorId": actor["id"],
         "actorName": actor["name"],
@@ -450,6 +496,7 @@ def _resolve_attack(
         "heroClassMultiplier": hero_class_multiplier,
         "skillTypeMultiplier": skill_type_multiplier,
         "skillMultiplier": skill_multiplier,
+        "isSkillAction": is_skill_action,
         "outputMultiplier": output_multiplier,
         "damageTakenMultiplier": damage_taken_multiplier,
         "finalDamageMultiplier": final_damage_multiplier,
@@ -463,7 +510,9 @@ def _create_turn_started_event(
     timeline_ms: float,
     actor: RuntimeUnit,
     target: RuntimeUnit,
+    action_type: ActionType,
 ) -> None:
+    is_skill_action = action_type == "skill"
     _create_event(
         events,
         {
@@ -471,11 +520,16 @@ def _create_turn_started_event(
             "round": round_index,
             "actorId": actor["id"],
             "targetId": target["id"],
-            "summary": f'{actor["name"]} 对 {target["name"]} 发起攻击',
+            "summary": f'{actor["name"]} 对 {target["name"]} {"释放技能" if is_skill_action else "发起攻击"}',
             "payload": {
+                "actionType": action_type,
                 "fireRate": _round_to_two_decimals(max(1.0, float(actor["stats"][UNIT_STAT_ROLE_KEYS["fireRate"]]))),
                 "currentAmmo": int(actor["currentAmmo"]),
+                "currentRage": _round_to_two_decimals(float(actor["currentRage"])),
+                "isSkillAction": is_skill_action,
                 "magazineCapacity": _get_magazine_capacity(actor["stats"]),
+                "nextSkillReadyRound": int(actor["nextSkillReadyRound"]),
+                "skillCooldownRounds": _get_skill_cooldown_rounds(actor["stats"]),
                 "timelineMs": timeline_ms,
             },
         },
@@ -495,9 +549,15 @@ def _create_attack_missed_event(
             "round": round_index,
             "actorId": resolution["actorId"],
             "targetId": resolution["targetId"],
-            "summary": f'{resolution["actorName"]} 攻击 {resolution["targetName"]}，但被闪避或未命中',
+            "summary": (
+                f'{resolution["actorName"]} 对 {resolution["targetName"]} 释放技能，但被闪避或未命中'
+                if resolution["actionType"] == "skill"
+                else f'{resolution["actorName"]} 攻击 {resolution["targetName"]}，但被闪避或未命中'
+            ),
             "payload": {
+                "actionType": resolution["actionType"],
                 "hitChance": resolution["effectiveHitChance"],
+                "isSkillAction": resolution["isSkillAction"],
                 "timelineMs": timeline_ms,
             },
         },
@@ -520,11 +580,13 @@ def _create_damage_applied_event(
             "actorId": resolution["actorId"],
             "targetId": resolution["targetId"],
             "summary": (
-                f'{resolution["actorName"]} 对 {resolution["targetName"]} 造成 {resolution["damage"]} 点{damage_tags}伤害，'
+                f'{resolution["actorName"]} {"释放技能攻击" if resolution["actionType"] == "skill" else "攻击"} {resolution["targetName"]}，'
+                f'造成 {resolution["damage"]} 点{damage_tags}伤害，'
                 f'目标剩余 {target_current_hp}/{resolution["targetMaxHp"]} HP'
                 f'{"（不破防）" if resolution["isMinimumDamageByDefense"] else ""}'
             ),
             "payload": {
+                "actionType": resolution["actionType"],
                 "damage": resolution["damage"],
                 "baseDamage": resolution["baseDamage"],
                 "targetHp": target_current_hp,
@@ -547,6 +609,7 @@ def _create_damage_applied_event(
                 "damageTakenMultiplier": _round_to_two_decimals(float(resolution["damageTakenMultiplier"]) * 100),
                 "finalDamageMultiplier": _round_to_two_decimals(float(resolution["finalDamageMultiplier"]) * 100),
                 "isMinimumDamageByDefense": resolution["isMinimumDamageByDefense"],
+                "isSkillAction": resolution["isSkillAction"],
                 "effectiveAttack": resolution["effectiveAttack"],
                 "effectiveDefense": resolution["effectiveDefense"],
                 "timelineMs": timeline_ms,
@@ -686,13 +749,25 @@ def _get_attack_ready_units_at_time(units: list[RuntimeUnit], timeline_ms: float
 
 def _advance_actor_timeline_after_attack(
     actor: RuntimeUnit,
+    action_resolution_mode: ActionResolutionMode,
     events: list[dict[str, Any]],
     round_index: int,
     timeline_ms: float,
     emit_reload_event: bool,
+    action_type: ActionType,
 ) -> None:
-    actor["currentAmmo"] = max(0, int(actor["currentAmmo"]) - 1)
     actor["nextAttackTimeMs"] = _normalize_timeline_value(timeline_ms + _get_fire_interval_ms(actor["stats"]))
+
+    if action_type == "skill":
+        if action_resolution_mode == "turnBasedSpeed":
+            actor["nextSkillReadyRound"] = round_index + _get_skill_cooldown_rounds(actor["stats"]) + 1
+        else:
+            actor["currentRage"] = 0.0
+            actor["lastRageUpdateMs"] = timeline_ms
+        actor["reloadUntilMs"] = None
+        return
+
+    actor["currentAmmo"] = max(0, int(actor["currentAmmo"]) - 1)
 
     if int(actor["currentAmmo"]) > 0:
         return
@@ -726,8 +801,9 @@ def _run_sequential_timeline_window(
         if target is None:
             break
 
-        _create_turn_started_event(events, round_index, timeline_ms, actor, target)
-        resolution = _resolve_attack(battle_input, random, actor, target)
+        action_type = _get_action_type(cast(ActionResolutionMode, battle_input["battle"]["actionResolutionMode"]), actor, round_index)
+        _create_turn_started_event(events, round_index, timeline_ms, actor, target, action_type)
+        resolution = _resolve_attack(battle_input, random, actor, target, action_type)
 
         if resolution["type"] == "miss":
             _create_attack_missed_event(events, round_index, timeline_ms, resolution)
@@ -739,7 +815,15 @@ def _run_sequential_timeline_window(
             if not target["isAlive"]:
                 _create_unit_defeated_event(events, round_index, timeline_ms, target, cast(str, resolution["actorId"]))
 
-        _advance_actor_timeline_after_attack(actor, events, round_index, timeline_ms, bool(actor["isAlive"]))
+        _advance_actor_timeline_after_attack(
+            actor,
+            cast(ActionResolutionMode, battle_input["battle"]["actionResolutionMode"]),
+            events,
+            round_index,
+            timeline_ms,
+            bool(actor["isAlive"]),
+            action_type,
+        )
 
         remaining_enemies = _get_alive_units_by_team(
             units,
@@ -761,6 +845,7 @@ def _run_simultaneous_timeline_window(
     snapshot_units = [_clone_runtime_unit(unit) for unit in units]
     action_order = _get_simultaneous_action_order(_get_attack_ready_units_at_time(snapshot_units, timeline_ms))
     actor_ids: list[str] = []
+    actor_action_types: list[ActionType] = []
     resolutions: list[AttackResolution] = []
 
     for actor in action_order:
@@ -768,9 +853,11 @@ def _run_simultaneous_timeline_window(
         if target is None:
             continue
 
-        _create_turn_started_event(events, round_index, timeline_ms, actor, target)
+        action_type = _get_action_type(cast(ActionResolutionMode, battle_input["battle"]["actionResolutionMode"]), actor, round_index)
+        _create_turn_started_event(events, round_index, timeline_ms, actor, target, action_type)
         actor_ids.append(cast(str, actor["id"]))
-        resolutions.append(_resolve_attack(battle_input, random, actor, target))
+        actor_action_types.append(action_type)
+        resolutions.append(_resolve_attack(battle_input, random, actor, target, action_type))
 
     defeated_ids: set[str] = set()
     defeated_order: list[str] = []
@@ -799,12 +886,20 @@ def _run_simultaneous_timeline_window(
 
         _create_unit_defeated_event(events, round_index, timeline_ms, target)
 
-    for actor_id in actor_ids:
+    for index, actor_id in enumerate(actor_ids):
         actor = next((unit for unit in units if unit["id"] == actor_id), None)
         if actor is None:
             continue
 
-        _advance_actor_timeline_after_attack(actor, events, round_index, timeline_ms, bool(actor["isAlive"]))
+        _advance_actor_timeline_after_attack(
+            actor,
+            cast(ActionResolutionMode, battle_input["battle"]["actionResolutionMode"]),
+            events,
+            round_index,
+            timeline_ms,
+            bool(actor["isAlive"]),
+            actor_action_types[index],
+        )
 
 
 TIMELINE_DRIVERS: dict[ActionResolutionMode, TimelineDriver] = {
@@ -814,7 +909,7 @@ TIMELINE_DRIVERS: dict[ActionResolutionMode, TimelineDriver] = {
 
 
 def simulate_battle(payload: BattleInput) -> dict[str, Any]:
-    units = [_clone_unit(unit, index) for index, unit in enumerate(payload["units"])]
+    units = [_clone_unit(unit, index, payload) for index, unit in enumerate(payload["units"])]
     events: list[dict[str, Any]] = []
     rounds_completed = 0
     last_timeline_ms = 0.0
@@ -831,6 +926,7 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
             "summary": f'{battle["teamNames"]["A"]} 与 {battle["teamNames"]["B"]} 的战斗开始',
             "payload": {
                 "actionResolutionMode": action_resolution_mode,
+                "initialRage": battle["initialRage"],
                 "maxBattleTimeMs": battle["maxBattleTimeMs"],
                 "maxRounds": battle["maxRounds"],
                 "timelineMs": 0,
@@ -857,15 +953,16 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
 
         rounds_completed += 1
         last_timeline_ms = timeline_ms
+        _sync_rage_at_time(units, timeline_ms, action_resolution_mode)
         _create_event(
             events,
-                {
-                    "type": "round_started",
-                    "round": rounds_completed,
-                    "summary": f"第 {rounds_completed} 轮开始",
-                    "payload": {
-                        "actionResolutionMode": action_resolution_mode,
-                        "aliveA": len(team_a_alive),
+            {
+                "type": "round_started",
+                "round": rounds_completed,
+                "summary": f"第 {rounds_completed} 轮开始",
+                "payload": {
+                    "actionResolutionMode": action_resolution_mode,
+                    "aliveA": len(team_a_alive),
                     "aliveB": len(team_b_alive),
                     "timelineMs": timeline_ms,
                 },
@@ -916,7 +1013,9 @@ def simulate_battle(payload: BattleInput) -> dict[str, Any]:
 
     final_units: list[dict[str, Any]] = []
     for unit in units:
-        final_units.append({key: value for key, value in unit.items() if key != "initialOrder"})
+        final_units.append(
+            {key: value for key, value in unit.items() if key not in {"initialOrder", "lastRageUpdateMs"}}
+        )
 
     return {
         "randomSeed": random.seed,
@@ -935,12 +1034,12 @@ def simulate_battle_batch_summary(payload: BattleInput, count: int) -> BattleBat
     }
     team_max_hp_totals = {
         "A": sum(
-            _get_effective_max_hp(_clone_unit(unit, index))
+            _get_effective_max_hp(_clone_unit(unit, index, payload))
             for index, unit in enumerate(payload["units"])
             if unit["teamId"] == "A"
         ),
         "B": sum(
-            _get_effective_max_hp(_clone_unit(unit, index))
+            _get_effective_max_hp(_clone_unit(unit, index, payload))
             for index, unit in enumerate(payload["units"])
             if unit["teamId"] == "B"
         ),

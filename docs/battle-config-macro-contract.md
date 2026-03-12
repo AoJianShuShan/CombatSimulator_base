@@ -16,6 +16,7 @@
   - `elementAdvantageDamageRate`
   - `elementDisadvantageDamageRate`
   - `randomSeed`
+  - `initialRage`
 
 ## 不属于这份宏的内容
 

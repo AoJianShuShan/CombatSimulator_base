@@ -38,7 +38,8 @@
 - `射速（发/min）` 决定攻击冷却时间：`60000 / 射速`
 - 开局弹匣默认装满
 - 每次普通攻击消耗 `1` 发弹药
-- 如果这次攻击后弹匣打空，则单位立即进入换弹
+- 技能释放也属于一次行动，但技能动作本身不消耗弹药
+- 如果这次普通攻击后弹匣打空，则单位立即进入换弹
 - `换弹动作时间（ms）` 决定换弹完成所需时长
 - 单位只有同时满足：
   - 自己的攻击冷却结束
@@ -46,6 +47,38 @@
   才能再次开火
 - `弹匣最大容量（发）` 越大，连续开火次数越多，换弹频率越低
 - `最大战斗时长（ms）` 作为整场战斗上限存在；一旦下一个时间点超出这个上限，就停止继续推进；若此时双方都还存活，则结果按平局处理
+
+## 技能释放
+
+### 回合制速度高者先手
+
+- 单位开局默认立刻具备一次技能释放资格
+- `回合CD` 只在这个模式下生效
+- 如果当前轮次 `>= nextSkillReadyRound`，则这次行动改为释放技能，而不是普通攻击
+- 技能释放后：
+  - 不会消耗弹药
+  - 会进入本次行动对应的射击冷却
+  - 下一次可释放技能轮次更新为：`当前轮次 + 回合CD + 1`
+- 因此：
+  - `回合CD = 0` 时，每次轮到自己行动都可以继续放技能
+  - `回合CD = 1` 时，中间至少要空 1 个后续轮次，下一次才会再放技能
+
+### Arpg即时制（时间）
+
+- `初始怒气值` 只在这个模式下生效，输入范围是 `0 ~ 100`
+- 单位开局怒气 = `初始怒气值`
+- `怒气恢复速度（点/s）` 决定怒气随时间的恢复速度
+- 当某个时间点到来时，会先按过去的真实时间补齐怒气
+- 若此时怒气 `>= 100`，则这次行动改为释放技能，而不是普通攻击
+- 技能释放后怒气会立刻清零，再从 `0` 重新累计
+- 如果怒气未满 `100`，这次行动就是普通攻击
+
+### 技能与普通攻击的共同规则
+
+- 技能不额外插队，它只是把“这次本来要发生的普通攻击”替换成“技能动作”
+- 技能动作仍然会推进射击冷却，但不会因为这次技能直接减少当前弹药
+- 技能不消耗弹药，所以也不会因为这次技能动作本身直接触发换弹
+- `技能倍率%` 默认值是 `200%`，且只有在释放技能时才会参与伤害乘算；普通攻击这层固定按 `1` 倍处理
 
 ## 目标策略
 
@@ -113,7 +146,7 @@ armorMultiplier = 1 - armorReduction
 scenarioMultiplier = 1 + scenarioDamageBonus / 100
 heroClassMultiplier = 1 + heroClassDamageBonus / 100
 skillTypeMultiplier = 1 + skillTypeDamageBonus / 100
-skillMultiplier = skillMultiplier / 100
+skillMultiplier = actionType === skill ? skillMultiplier / 100 : 1
 outputMultiplier = max(0, 1 + (outputAmplify - outputDecay) / 100)
 damageTakenMultiplier = max(0, 1 + (damageTakenAmplify - damageTakenReduction) / 100)
 finalDamageMultiplier = max(0, 1 + (finalDamageBonus - finalDamageReduction) / 100)
@@ -162,6 +195,9 @@ damage = max(minimumDamage, round(damageBeforeRound))
 - 所有事件都带稳定递增的 `timeIndex`，它表示事件索引，不表示毫秒时间
 - 所有事件都带固定字段 `elapsedTimeMs`，表示该事件对应的真实战斗时间
 - 事件附加载荷里仍可能带 `timelineMs` 或其他时间相关字段，用于描述事件细节，例如“换弹完成时间”“下一次攻击时间”
+- `battle_started` 会记录 `initialRage`
+- `turn_started` / `attack_missed` / `damage_applied` 会记录 `actionType` 和 `isSkillAction`
+- `turn_started` 还会根据模式额外记录 `currentRage` 或 `nextSkillReadyRound`
 - 伤害事件会记录当前生命、最大生命、暴击、爆头、护甲减伤、元素关系和各乘区信息
 
 ## 一致性要求

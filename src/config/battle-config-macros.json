@@ -62,6 +62,14 @@
       "max": 4294967295,
       "step": 1,
       "defaultFactory": "currentTimeUint32"
+    },
+    {
+      "key": "initialRage",
+      "label": "初始怒气值",
+      "default": 0,
+      "min": 0,
+      "max": 100,
+      "step": 1
     }
   ]
 }

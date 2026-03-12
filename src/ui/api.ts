@@ -141,8 +141,14 @@ function assertBattleUnitState(unit: unknown, index: number): asserts unit is Ba
   if (unit.currentAmmo !== undefined) {
     assertFiniteNumber(unit.currentAmmo, `finalUnits[${index}].currentAmmo`);
   }
+  if (unit.currentRage !== undefined) {
+    assertFiniteNumber(unit.currentRage, `finalUnits[${index}].currentRage`);
+  }
   if (unit.nextAttackTimeMs !== undefined) {
     assertFiniteNumber(unit.nextAttackTimeMs, `finalUnits[${index}].nextAttackTimeMs`);
+  }
+  if (unit.nextSkillReadyRound !== undefined) {
+    assertFiniteNumber(unit.nextSkillReadyRound, `finalUnits[${index}].nextSkillReadyRound`);
   }
   if (unit.reloadUntilMs !== undefined && unit.reloadUntilMs !== null) {
     assertFiniteNumber(unit.reloadUntilMs, `finalUnits[${index}].reloadUntilMs`);
@@ -224,9 +230,11 @@ function parseBattleSensitivityPointResult(payload: unknown, index: number): Bat
   assertPlainObject(payload, `points[${index}]`);
   assertInteger(payload.index, `points[${index}].index`);
   assertFiniteNumber(payload.value, `points[${index}].value`);
+  assertFiniteNumber(payload.actualValue, `points[${index}].actualValue`);
   return {
     index: payload.index,
     value: payload.value,
+    actualValue: payload.actualValue,
     summary: parseBattleBatchSummaryResult(payload.summary),
   };
 }
